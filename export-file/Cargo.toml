@@ -15,11 +15,11 @@ license = "Apache-2.0"
 crate-type = ["rlib"]
 
 [dependencies]
-# The ONE busbar crate a plugin names (DECISIONS #84: a plugin's busbar closure is exactly
-# busbar-plugin-sdk, whose own busbar closure is busbar-contract + busbar-plugin — #40). Pinned by
+# The ONE busbar crate a plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into it
+# as `busbar_contract::abi::sdk`, so a plugin's busbar closure is exactly busbar-contract). Pinned by
 # git rev to the busbar commit in `.busbar-ref`; a busbar build that links this crate `[patch]`es the
 # busbar git source to its own tree, so ONE copy of the contract links.
-busbar-plugin-sdk = { git = "https://github.com/GetBusbar/busbar", rev = "560b295547be444c4ea2980436cd811112d85770" }
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "8b7b6473f47f8d37ae60839c74cfe6a9b64a1dc9" }
 # The sink's settings shape (`FileSettings`), parsed with the same serde the host's configuration
 # grammar uses so a settings error reads exactly as it always has. Not busbar crates: they do not
 # widen this crate's busbar closure.

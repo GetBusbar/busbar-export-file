@@ -27,7 +27,7 @@
 
 pub mod config;
 
-use busbar_plugin_sdk::{
+use busbar_contract::abi::sdk::{
     ExportHandler, ExportStream, HostOp, HostResult, HostStep, Observations, PluginMetric, Rotation,
 };
 use config::FileSettings;
@@ -211,21 +211,21 @@ pub fn open(cfg: &str) -> Result<Box<dyn ExportHandler>, String> {
     }))
 }
 
-busbar_plugin_sdk::export_export_plugin!(open);
+busbar_contract::abi::sdk::export_export_plugin!(open);
 
 /// THE COMPILED-IN ENTRY POINT — the same op-dispatch `busbar_call` runs, envelope included.
 pub fn dispatch_compiled_in(
     handler: &dyn ExportHandler,
-    req: busbar_plugin_sdk::ExportRequest,
-) -> busbar_plugin_sdk::Envelope<busbar_plugin_sdk::ExportResponse> {
-    busbar_plugin_sdk::dispatch_export_enveloped(handler, req)
+    req: busbar_contract::abi::sdk::ExportRequest,
+) -> busbar_contract::abi::sdk::Envelope<busbar_contract::abi::sdk::ExportResponse> {
+    busbar_contract::abi::sdk::dispatch_export_enveloped(handler, req)
 }
 
 /// THE LINKED DOOR's entry: what the composition root's `exports` axis reads for this crate.
 pub mod linked {
     /// `(name, alias, declares, boundary)` — the row's statement and the boundary the one cold
     /// load runs over, exactly what the dropped-in tarball states and exports.
-    pub const EXPORT: (&str, &str, &str, &busbar_plugin_sdk::ColdEntry) = (
+    pub const EXPORT: (&str, &str, &str, &busbar_contract::abi::sdk::ColdEntry) = (
         super::NAME,
         super::ALIAS,
         super::DECLARES,

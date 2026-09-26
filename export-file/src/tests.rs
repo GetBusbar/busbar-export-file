@@ -6,7 +6,7 @@
 //! composition root (`crates/busbar/src/root/tests/linked_exports.rs`).
 
 use super::*;
-use busbar_plugin_sdk::{RotationFault, Route};
+use busbar_contract::abi::sdk::{RotationFault, Route};
 
 fn sink(settings: serde_json::Value) -> Box<dyn ExportHandler> {
     open(&settings.to_string()).expect("the sink opens")
