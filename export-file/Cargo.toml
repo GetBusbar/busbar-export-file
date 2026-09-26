@@ -1,18 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "busbar-export-file"
-version = "1.0.0"
-publish = false            # internal workspace crate; never goes to crates.io
+version = "1.5.0"
+publish = false            # a first-party plugin crate; shipped linked into busbar or as a signed tarball
 edition = "2021"
 rust-version = "1.97"
-description = "the built-in PUSH per-request JSONL file exporter (Logs stream), packaged as busbar's kind:export sink logic. SCAFFOLD: skeleton pending byte-identical extraction from busbar-core."
+description = "The request-log FILE export sink (`module: request-log-file`): appends each request-log line as JSONL, rotating by rename at `rotate_mb`. Every file act is performed by the host on the destination it opened for the operator's configured path; the sink never opens a path."
 license = "Apache-2.0"
 
+[lib]
+# rlib: THE LOGIC. The busbar composition root links it (its `linked::EXPORT` row and
+# `BUSBAR_COLD_ENTRY`), and the sibling `busbar-export-file-plugin` cdylib re-exports it as the
+# dropped-in door. One source, both doors (DECISIONS #2 rule (1)).
+crate-type = ["rlib"]
+
 [dependencies]
-# INTERIM: busbar isn't public yet, so this is a local path dependency into a sibling checkout. Once
-# busbar ships publicly this becomes a git (pinned rev/tag) or crates.io dependency instead. The SDK
-# re-exports the export ABI wire types (ExportHandler / ExportStream / ExportField / Route), so the
-# sink logic names them without a direct busbar-plugin dependency.
-busbar-plugin-sdk = { path = "../../busbar/crates/plugin-sdk" }
-serde = "1"
+# The ONE busbar crate a plugin names (DECISIONS #84: a plugin's busbar closure is exactly
+# busbar-plugin-sdk, whose own busbar closure is busbar-contract + busbar-plugin — #40). Pinned by
+# git rev to the busbar commit in `.busbar-ref`; a busbar build that links this crate `[patch]`es the
+# busbar git source to its own tree, so ONE copy of the contract links.
+busbar-plugin-sdk = { git = "https://github.com/GetBusbar/busbar", rev = "560b295547be444c4ea2980436cd811112d85770" }
+# The sink's settings shape (`FileSettings`), parsed with the same serde the host's configuration
+# grammar uses so a settings error reads exactly as it always has. Not busbar crates: they do not
+# widen this crate's busbar closure.
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The sink's operator log lines (its rotation line and its five catalogue diagnostics), emitted with
+# the catalogue's `diag` banner field exactly as they always were.
+tracing = "0.1.44"
