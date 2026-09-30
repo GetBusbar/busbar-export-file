@@ -145,3 +145,185 @@ fn the_sink_carries_logs_and_serves_no_route() {
     assert_eq!(s.streams(), vec![ExportStream::Logs]);
     assert_eq!(s.routes(), Vec::<Route>::new());
 }
+
+/// One captured `tracing` event: its level-independent `diag` field, when it carried one.
+#[derive(Default, Clone)]
+struct Capture(std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>);
+
+struct DiagVisitor(Option<String>);
+
+impl tracing::field::Visit for DiagVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "diag" {
+            self.0 = Some(format!("{value:?}"));
+        }
+    }
+}
+
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut v = DiagVisitor(None);
+        event.record(&mut v);
+        self.0.lock().unwrap().push(v.0);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// Run `f` and return the `diag` field of every event it logged, in order (`None` for an event
+/// with no `diag`, such as the rotation info line).
+fn diags_of(f: impl FnOnce()) -> Vec<Option<String>> {
+    let cap = Capture::default();
+    tracing::subscriber::with_default(cap.clone(), f);
+    let got = cap.0.lock().unwrap().clone();
+    got
+}
+
+fn fault(step: &str) -> RotationFault {
+    RotationFault {
+        step: step.into(),
+        from: "/x".into(),
+        to: Some("/x.1".into()),
+        error: "denied".into(),
+    }
+}
+
+fn rot(renamed: bool, faults: Vec<RotationFault>) -> Rotation {
+    Rotation {
+        archive: "/x.1".into(),
+        renamed,
+        faults,
+    }
+}
+
+fn diag(code: &str) -> Option<String> {
+    Some(code.to_string())
+}
+
+/// EFILE-3: each host step that failed is logged under its own catalogue code.
+#[test]
+fn each_failed_step_is_logged_under_its_own_code() {
+    let s = sink(serde_json::json!({"path": "/x"}));
+    let failed = |step: &str| HostResult::Failed {
+        step: step.into(),
+        error: "e".into(),
+        rotation: None,
+    };
+    assert_eq!(
+        diags_of(|| {
+            s.resume(0, vec![failed("append")]);
+        }),
+        vec![diag("BUSBAR-7073")]
+    );
+    assert_eq!(
+        diags_of(|| {
+            s.resume(0, vec![failed("open")]);
+        }),
+        vec![diag("BUSBAR-7074")]
+    );
+    let faults = vec![fault("retention"), fault("shift"), fault("rename")];
+    assert_eq!(
+        diags_of(|| {
+            s.resume(
+                0,
+                vec![HostResult::Done {
+                    rotation: Some(rot(false, faults)),
+                }],
+            );
+        }),
+        vec![
+            diag("BUSBAR-7075"),
+            diag("BUSBAR-7076"),
+            diag("BUSBAR-7077")
+        ]
+    );
+}
+
+fn drained(s: &dyn ExportHandler) -> Vec<(String, f64)> {
+    s.drain_observations()
+        .metrics
+        .iter()
+        .map(|m| (m.name.clone(), m.value))
+        .collect()
+}
+
+/// EFILE-4: retention and shift faults, even on a renamed rotation, never count `rotate_failed`.
+#[test]
+fn only_a_rename_fault_counts_rotate_failed() {
+    let s = sink(serde_json::json!({"path": "/x"}));
+    s.resume(
+        0,
+        vec![HostResult::Done {
+            rotation: Some(rot(true, vec![fault("retention"), fault("shift")])),
+        }],
+    );
+    assert_eq!(drained(s.as_ref()), vec![(ROTATED_TOTAL.into(), 1.0)]);
+}
+
+/// EFILE-5: counters accumulate across rotations between drains and render as counters.
+#[test]
+fn counters_accumulate_between_drains_and_are_counters() {
+    let s = sink(serde_json::json!({"path": "/x"}));
+    let renamed = || HostResult::Done {
+        rotation: Some(rot(true, vec![])),
+    };
+    let rename_fault = || HostResult::Done {
+        rotation: Some(rot(false, vec![fault("rename")])),
+    };
+    s.resume(
+        0,
+        vec![renamed(), renamed(), rename_fault(), rename_fault()],
+    );
+    let observed = s.drain_observations();
+    assert_eq!(
+        observed
+            .metrics
+            .iter()
+            .map(|m| (m.name.clone(), m.value))
+            .collect::<Vec<_>>(),
+        vec![
+            (ROTATED_TOTAL.into(), 2.0),
+            (ROTATE_FAILED_TOTAL.into(), 2.0)
+        ]
+    );
+    for m in &observed.metrics {
+        assert_eq!(m.kind, "counter", "{} is a counter", m.name);
+    }
+}
+
+/// EFILE-6: a huge `rotate_mb` saturates to `u64::MAX` bytes rather than overflowing.
+#[test]
+fn a_huge_rotate_mb_saturates() {
+    let s = sink(serde_json::json!({"path": "/x", "rotate_mb": u64::MAX}));
+    let step = s.deliver_via_host(ExportStream::Logs, &serde_json::json!({}));
+    assert!(matches!(
+        step,
+        HostStep::Host { ops, .. }
+            if matches!(&ops[0], HostOp::Write { rotate_at: Some(u64::MAX), .. })
+    ));
+}
+
+/// EFILE-7: a wrong-typed `rotate_mb` is refused in the configuration's own serde words.
+#[test]
+fn a_wrong_typed_rotate_mb_is_refused_in_serde_words() {
+    let s = sink(serde_json::json!({}));
+    assert_eq!(
+        s.validate("tail", &serde_json::json!({"path": "/x", "rotate_mb": -1})),
+        vec!["export.tail.settings: invalid value: integer `-1`, expected u64".to_string()]
+    );
+    assert_eq!(
+        s.validate(
+            "tail",
+            &serde_json::json!({"path": "/x", "rotate_mb": "one"})
+        ),
+        vec!["export.tail.settings: invalid type: string \"one\", expected u64".to_string()]
+    );
+}
