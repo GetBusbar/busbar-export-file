@@ -9,9 +9,9 @@ description = "The request-log FILE export sink (`module: request-log-file`): ap
 license = "Apache-2.0"
 
 [lib]
-# rlib: THE LOGIC. The busbar composition root links it (its `linked::EXPORT` row and
-# `BUSBAR_COLD_ENTRY`), and the sibling `busbar-export-file-plugin` cdylib re-exports it as the
-# dropped-in door. One source, both doors (DECISIONS #2 rule (1)).
+# rlib: THE LOGIC and its door. A build that LINKS this crate registers `door` as its compiled-in
+# row (no symbol is exported from here); the sibling `busbar-export-file-plugin` cdylib exports the
+# same door as `busbar_plugin_door`. One source, both doors (THE DESIGN §11.4).
 crate-type = ["rlib"]
 
 [dependencies]
@@ -19,12 +19,12 @@ crate-type = ["rlib"]
 # as `busbar_contract::abi::sdk`, so a plugin's busbar closure is exactly busbar-contract). Pinned by
 # git rev to the busbar commit in `.busbar-ref`; a busbar build that links this crate `[patch]`es the
 # busbar git source to its own tree, so ONE copy of the contract links.
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "23d8a6b46deb158839df8bc02115b09023633040" }
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "934a016e20fc1a67c209b671d137c8cc28092767" }
 # The sink's settings shape (`FileSettings`), parsed with the same serde the host's configuration
 # grammar uses so a settings error reads exactly as it always has. Not busbar crates: they do not
 # widen this crate's busbar closure.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# The sink's operator log lines (its rotation line and its five catalogue diagnostics), emitted with
-# the catalogue's `diag` banner field exactly as they always were.
+# The sink's operator log lines, emitted with the catalogue's `diag` banner field exactly as they
+# always were; the door's call capture carries them to the instance's plugin log (THE DESIGN §11.2).
 tracing = "0.1.44"

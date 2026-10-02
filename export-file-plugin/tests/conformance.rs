@@ -1,232 +1,338 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **ONE EXPORT SINK, BOTH DOORS, ONE ROW** — the file sink's linked + dropped-in conformance, run
-//! against the busbar rev this repo pins (`.busbar-ref`).
+//! **ONE EXPORT SINK, BOTH DOORS, ONE TABLE** — the file sink's linked + dropped-in conformance on
+//! the export kind's memory ABI (THE DESIGN §11.4), run against the busbar rev this repo pins
+//! (`.busbar-ref`).
 //!
-//! The sink is held two ways at once: LINKED (its `linked::EXPORT` statement and boundary, the row a
-//! busbar build that compiles it in registers) and DROPPED IN (this crate's built cdylib, signed
-//! first-party under the SAME statement — `declares` included, which is what
-//! `busbar-plugin-pack --declares-file` embeds — into a temp `plugins/` directory and found by the
-//! loader's scan). Each arm is opened by the one `open_export`, its settings validated by the one
-//! `probe_export`, and driven through a rotation scenario against a real file: the two arms must
-//! agree byte for byte on the row, the validation lines, the series the host grants and every file
-//! the deliveries leave behind — lines, rotation and retention.
+//! The sink is held two ways at once: LINKED (the logic crate's `door`, through the loader's
+//! `load_linked`) and DROPPED IN (this crate's built cdylib, `dlopen`ed by the loader's
+//! `load_dropped`, which resolves `busbar_plugin_door`, validates the door and compares its
+//! Statement with the stated one byte for byte). Each is bound to a real dispatcher and driven over
+//! the same script through the export kind's table: `validate` over good and refused settings,
+//! `open`, `deliver`, `scrape`, `status`, `check`, `serve`, `close`, with every envelope entry the
+//! host ingested. The two transcripts must be equal.
 //!
-//! The RED arm is in the same test: the same cdylib dropped in WITHOUT its declarations is not the
-//! same sink — the host binds it no destination, so its deliveries leave no file.
-//!
-//! Ported from busbar's `crates/busbar/src/root/tests/linked_exports.rs` (K9b), where the sink was
-//! proven before it moved to this repo; busbar still runs that test against the pinned sink.
+//! THE RED ARMS, same file: the door asked for as another kind is refused; a stated Statement that
+//! is not the door's is refused; the same door opened over unparsed settings answers a different
+//! transcript (so the equality is not vacuous). A missing cdylib PANICS — this test IS the
+//! dropped-in door's proof, and never skips.
 
-use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
-use busbar_plugin_loader::{LinkedPlugin, PluginRegistry};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-/// The release key the dropped-in arm is signed with, and the policy's first-party key.
-fn release() -> SigningKey {
-    SigningKey::from_bytes(&[11u8; 32])
-}
-
-/// The version both arms state (a linked row states its binary's version; here, this crate's).
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+use busbar_contract::abi::export::{
+    slot, CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut, StatusOut,
+    CHECK_PHASE_INSTANCES,
+};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, BLOB_JSON, BLOB_JSONL};
+use busbar_contract::abi::mechanism::lifecycle::{slot as lc, OpenIn, OpenOut, ValidateIn};
+use busbar_plugin_loader::dispatch::kinds::export::Export;
+use busbar_plugin_loader::dispatch::kinds::hook::Hook;
+use busbar_plugin_loader::dispatch::{
+    in_head, load_dropped, load_linked, out_head, rendering_of_library, Bind, Called, Diagnostic,
+    DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, LinkedRow, LoadError, Metric, Plugin,
+    NO_BLOB,
+};
 
 /// This crate's built cdylib (uplifted or under `deps`, newest wins). A missing artifact is a
-/// failure, never a skip: this test IS the dropped-in door's proof.
-fn cdylib() -> Vec<u8> {
+/// failure, never a skip.
+fn cdylib() -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary has a path");
     let profile = exe
         .parent()
         .and_then(|d| d.parent())
         .expect("target/<profile>");
     let file = busbar_plugin_loader::plugin_library_filename("busbar_export_file_plugin");
-    let found = [profile.join(&file), profile.join("deps").join(&file)]
+    [profile.join(&file), profile.join("deps").join(&file)]
         .into_iter()
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
         .max()
         .map(|(_, p)| p)
-        .unwrap_or_else(|| panic!("the busbar-export-file-plugin cdylib ({file}) is not built"));
-    std::fs::read(found).expect("read the cdylib")
+        .unwrap_or_else(|| panic!("the busbar-export-file-plugin cdylib ({file}) is not built"))
 }
 
-/// The LINKED row: exactly what busbar's composition root states for `linked::EXPORT`.
-fn linked_row() -> LinkedPlugin {
-    let (name, alias, declares, entry) = busbar_export_file::linked::EXPORT;
-    let abi = busbar_plugin_loader::supported_abi("export")
-        .iter()
-        .copied()
-        .max()
+/// Every envelope entry the host ingested, as text.
+#[derive(Default)]
+struct Recorder(Mutex<Vec<String>>);
+
+impl EnvelopeSink for Recorder {
+    fn metric(&self, m: Metric<'_>) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("metric {} {} {}", m.family, m.kind, m.value));
+    }
+    fn diag(&self, d: Diagnostic<'_>) {
+        self.0.lock().unwrap().push(format!(
+            "diag {} {} {}",
+            String::from_utf8_lossy(d.name),
+            d.severity,
+            String::from_utf8_lossy(d.text)
+        ));
+    }
+    fn dropped(&self, why: Dropped) {
+        self.0.lock().unwrap().push(format!("dropped {why:?}"));
+    }
+}
+
+fn bind(d: &Dispatcher, sink: Arc<Recorder>) -> Bind {
+    Bind {
+        instance: Arc::from("tail"),
+        max_inflight_cap: 64,
+        sink,
+        dispatcher: d.adopter(),
+        conns: None,
+    }
+}
+
+/// A blank head stating `I`'s size (the host states the `in` it wrote).
+fn head<I>() -> InHead {
+    InHead {
+        size: std::mem::size_of::<I>() as u32,
+        ..in_head()
+    }
+}
+
+const fn blob(bytes: &'static [u8], fmt: u32) -> Blob {
+    Blob {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+        fmt,
+        flags: 0,
+    }
+}
+
+fn answered(c: &Called) -> String {
+    let error = c
+        .error
+        .as_deref()
+        .map(String::from_utf8_lossy)
         .unwrap_or_default();
-    let manifest = Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "export".into(),
-        version: VERSION.into(),
-        publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
-        abi_version: abi,
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: serde_json::from_str(declares).expect("declares.json parses"),
-    };
-    LinkedPlugin::boundary(manifest, entry)
+    format!("{:?} {error:?} lease={}", c.outcome, c.lease)
 }
 
-/// THE DROPPED-IN DOOR: `lib` signed first-party under `manifest` into a fresh `plugins/`
-/// directory, scanned under a policy holding the release key.
-fn dropped(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegistry {
-    let dir = scratch(&format!("plugins-{tag}"));
-    let signed = sign(&release(), manifest, lib);
-    let tarball = busbar_plugin_loader::tarball::package(&signed, "libsink.so", lib).unwrap();
-    std::fs::write(dir.join("sink.tar.gz"), tarball).unwrap();
-    let policy = TrustPolicy {
-        first_party_key: Some(release().verifying_key()),
-        binary_version: VERSION.into(),
-        first_party_floors: Default::default(),
-        first_party_high_water: Default::default(),
-        publishers: Default::default(),
-        allow_unsigned: false,
-        allow_third_party: false,
-        min_versions: Default::default(),
-    };
-    busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the signed sink scans")
-}
-
-/// A fresh scratch directory for this process.
-fn scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("export-file-conf-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// What one door does with `alias`, as one comparable transcript: the row's statement, whether it
-/// is first-party, the validation lines, the series the host granted it, and — after a rotation
-/// scenario against a real file under `tag` — every file left behind, by name, with its bytes.
-fn transcript(tag: &str, registry: &PluginRegistry, alias: &str) -> serde_json::Value {
-    let p = registry.resolve(alias).expect("the alias resolves");
-    let stated = Manifest {
-        sha256: String::new(),
-        signature: String::new(),
-        ..p.manifest.clone()
-    };
-    let validation = [
-        serde_json::json!({"path": "/x"}),
-        serde_json::json!({}),
-        serde_json::json!({"path": "/x", "rotate_mb": "one"}),
-        serde_json::json!({"path": "/x", "rotate": 1}),
-    ]
-    .map(|s| registry.probe_export(alias, "tail", &s));
-
-    // THE ROTATION SCENARIO: a live file already at `rotate_mb`, a full archive series (so the
-    // oldest is retired), then three deliveries — the first rotates, the next two append.
-    let dir = scratch(&format!("files-{tag}"));
-    let path = dir.join("requests.jsonl");
-    std::fs::write(&path, vec![b'x'; 1024 * 1024]).unwrap();
-    for i in 1..=9 {
-        std::fs::write(
-            dir.join(format!("requests.jsonl.{i}")),
-            format!("archive {i}\n"),
-        )
-        .unwrap();
+/// One door's transcript over `settings`: every op's answer, then every envelope entry.
+fn transcript(p: &Plugin<Export>, rec: &Recorder, settings: &'static [u8]) -> Vec<String> {
+    let mut t = Vec::new();
+    for s in [
+        &br#"{"path":"/x","rotate_mb":1}"#[..],
+        b"{}",
+        br#"{"path":"/x","rotate":1}"#,
+        br#"{"path":"/x","rotate_mb":"one"}"#,
+    ] {
+        let mut err = vec![0_u8; 512];
+        let input = ValidateIn {
+            head: head::<ValidateIn>(),
+            settings: Blob {
+                ptr: s.as_ptr(),
+                len: s.len(),
+                fmt: BLOB_JSON,
+                flags: 0,
+            },
+            err_buf: err.as_mut_ptr(),
+            err_cap: err.len(),
+        };
+        let mut f = Frame::new(input, out_head());
+        t.push(format!(
+            "validate {}",
+            answered(&p.call(lc::VALIDATE, &mut f))
+        ));
     }
-    let settings = serde_json::json!({"path": path.display().to_string(), "rotate_mb": 1});
-    let sink = registry
-        .open_export(alias, &settings.to_string())
-        .expect("the sink opens");
-    let granted: Vec<String> = stated
-        .declares
-        .metrics
-        .iter()
-        .filter(|d| {
-            busbar_plugin_loader::observe::first_party_series(&stated.name, &d.name, &d.kind)
-        })
-        .map(|d| d.name.clone())
-        .collect();
-    for n in 0..3 {
-        let line = serde_json::json!({"ingress_protocol": "k9b", "outcome": "ok", "ts": n});
-        sink.deliver(busbar_plugin_loader::ExportStream::Logs, &line)
-            .expect("the delivery completes");
-    }
-    let mut files: Vec<(String, String)> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .map(|f| {
-            let bytes = std::fs::read(&f).unwrap();
-            let name = f.file_name().unwrap().to_string_lossy().into_owned();
-            let text = match bytes.len() > 4096 {
-                true => format!("{} bytes", bytes.len()),
-                false => String::from_utf8_lossy(&bytes).into_owned(),
-            };
-            (name, text)
-        })
-        .collect();
-    files.sort();
-    let _ = std::fs::remove_dir_all(&dir);
-    serde_json::json!({
-        "row": stated,
-        "first_party": p.first_party(),
-        "validation": validation,
-        "granted": granted,
-        "files": files,
-    })
+
+    let mut err = vec![0_u8; 512];
+    let mut f = Frame::new(
+        OpenIn {
+            head: head::<OpenIn>(),
+            host: std::ptr::null(),
+            settings: Blob {
+                ptr: settings.as_ptr(),
+                len: settings.len(),
+                fmt: BLOB_JSON,
+                flags: 0,
+            },
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+            generation: 1,
+            err_buf: err.as_mut_ptr(),
+            err_cap: err.len(),
+        },
+        OpenOut {
+            head: out_head(),
+            instance: std::ptr::null_mut(),
+            err_len: 0,
+        },
+    );
+    t.push(format!("open {}", answered(&p.call(lc::OPEN, &mut f))));
+
+    let mut f = Frame::new(
+        DeliverIn {
+            head: head::<DeliverIn>(),
+            op_id: [7; 16],
+            stream: 1,
+            _reserved: [0; 7],
+            batch: blob(b"{\"outcome\":\"ok\",\"ts\":1}\n", BLOB_JSONL),
+        },
+        out_head(),
+    );
+    t.push(format!(
+        "deliver {}",
+        answered(&p.call(slot::DELIVER, &mut f))
+    ));
+
+    let mut buf = vec![0_u8; 64];
+    let mut f = Frame::new(
+        ScrapeIn {
+            head: head::<ScrapeIn>(),
+            families: std::ptr::null(),
+            families_len: 0,
+            buf: buf.as_mut_ptr(),
+            cap: buf.len(),
+        },
+        ScrapeOut {
+            head: out_head(),
+            written: 0,
+            needed: 0,
+        },
+    );
+    let c = p.call(slot::SCRAPE, &mut f);
+    t.push(format!("scrape {} written={}", answered(&c), f.out.written));
+
+    let mut f = Frame::new(
+        in_head(),
+        StatusOut {
+            head: out_head(),
+            status: NO_BLOB,
+        },
+    );
+    let c = p.call(slot::STATUS, &mut f);
+    t.push(format!("status {} len={}", answered(&c), f.out.status.len));
+
+    let mut f = Frame::new(
+        CheckIn {
+            head: head::<CheckIn>(),
+            phase: CHECK_PHASE_INSTANCES,
+            _reserved: 0,
+            instances: std::ptr::null(),
+            instances_len: 0,
+        },
+        CheckOut {
+            head: out_head(),
+            findings: NO_BLOB,
+        },
+    );
+    let c = p.call(slot::CHECK, &mut f);
+    t.push(format!("check {} len={}", answered(&c), f.out.findings.len));
+
+    let method = b"GET";
+    let path = b"/exports/tail/x";
+    let mut f = Frame::new(
+        ServeIn {
+            head: head::<ServeIn>(),
+            method: AbiStr {
+                ptr: method.as_ptr(),
+                len: method.len(),
+            },
+            path: AbiStr {
+                ptr: path.as_ptr(),
+                len: path.len(),
+            },
+            query: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            headers: std::ptr::null(),
+            headers_len: 0,
+            body: NO_BLOB,
+        },
+        ServeOut {
+            head: out_head(),
+            status_code: 0,
+            _reserved: [0; 6],
+            headers_out: std::ptr::null(),
+            headers_out_len: 0,
+            body: NO_BLOB,
+        },
+    );
+    let c = p.call(slot::SERVE, &mut f);
+    t.push(format!("serve {} code={}", answered(&c), f.out.status_code));
+
+    let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
+    t.push(format!("close {}", answered(&p.call(lc::CLOSE, &mut f))));
+
+    t.extend(rec.0.lock().unwrap().drain(..));
+    t
 }
 
-/// The file sink registers ONE row and behaves as ONE sink through either door — and the same
-/// cdylib without its declarations does not (the RED arm).
+const SETTINGS: &[u8] = br#"{"path":"/var/log/requests.jsonl","rotate_mb":1}"#;
+
+/// The file sink loads as ONE door both ways and answers alike, byte for byte.
 #[test]
 fn the_linked_and_the_dropped_in_file_sink_are_one_sink() {
-    let row = linked_row();
-    let (manifest, alias) = (row.manifest.clone(), row.manifest.alias.clone());
-    assert_eq!(manifest.name, "busbar-export-file");
-    assert_eq!(alias, "request-log-file");
-    let lib = cdylib();
+    let d = Dispatcher::new(DispatchConfig::default());
+    let row = LinkedRow::of(busbar_export_file::door).expect("the door states itself");
 
-    let linked_registry = PluginRegistry::empty().link(vec![row]).unwrap();
-    let linked = transcript("linked", &linked_registry, &alias);
-    let dropped_registry = dropped("dropped", manifest.clone(), &lib);
-    let dropped_in = transcript("dropped", &dropped_registry, &alias);
-    assert_eq!(linked, dropped_in, "the two doors are not one sink");
+    // What the packer signs into the manifest is the linked row's Statement, byte for byte.
+    let packed = rendering_of_library(&cdylib()).expect("the cdylib loads");
+    assert_eq!(packed.as_deref(), Some(&row.statement[..]));
 
-    // The scenario did what the sink is for: the full archive series shifted up and the oldest
-    // retired, the live file renamed to `.1`, and the three lines in a fresh file.
-    let files = linked["files"].as_array().unwrap();
-    assert_eq!(files.len(), 10, "{files:?}");
-    assert_eq!(files[0][0], "requests.jsonl");
-    assert_eq!(
-        files[0][1].as_str().unwrap(),
-        "{\"ingress_protocol\":\"k9b\",\"outcome\":\"ok\",\"ts\":0}\n\
-         {\"ingress_protocol\":\"k9b\",\"outcome\":\"ok\",\"ts\":1}\n\
-         {\"ingress_protocol\":\"k9b\",\"outcome\":\"ok\",\"ts\":2}\n"
-    );
-    assert_eq!(
-        files[1],
-        serde_json::json!(["requests.jsonl.1", "1048576 bytes"])
-    );
-    assert_eq!(
-        files[9],
-        serde_json::json!(["requests.jsonl.9", "archive 8\n"])
-    );
-    assert_eq!(linked["first_party"], true);
+    let (lr, dr) = (Arc::new(Recorder::default()), Arc::new(Recorder::default()));
+    let linked: Plugin<Export> = load_linked(&row, bind(&d, lr.clone())).expect("linked loads");
+    let dropped: Plugin<Export> =
+        load_dropped(&cdylib(), &row.statement, bind(&d, dr.clone())).expect("dropped loads");
+    assert_eq!(linked.name(), "busbar-export-file");
+    assert_eq!(dropped.name(), linked.name());
 
-    // RED ARM: the same bytes, dropped in without their declarations.
-    let bare = Manifest {
-        declares: Default::default(),
-        ..manifest
-    };
-    let red_registry = dropped("red", bare, &lib);
-    let red = transcript("red", &red_registry, &alias);
-    assert_ne!(red, linked, "an undeclared sink must not be the same sink");
-    let red_files = red["files"].as_array().unwrap();
-    assert!(
-        !red_files
-            .iter()
-            .any(|f| f[1].as_str().unwrap().contains("k9b")),
-        "with no destination granted, no line may be written: {red_files:?}"
+    let a = transcript(&linked, &lr, SETTINGS);
+    let b = transcript(&dropped, &dr, SETTINGS);
+    assert_eq!(a, b, "the two doors are not one sink");
+
+    // What the script did: the settings refusals in the grammar's words, a dropped delivery raised
+    // under the open-failed code, a push sink's empty answers.
+    let joined = a.join("\n");
+    for want in [
+        "validate Ready \"\"",
+        "settings: missing field `path`",
+        "settings: unknown field `rotate`, expected `path` or `rotate_mb`",
+        "settings: invalid type: string \\\"one\\\", expected u64",
+        "open Ready",
+        "deliver Ready",
+        "scrape Ready \"\" lease=0 written=0",
+        "status Ready \"\" lease=0 len=0",
+        "check Ready \"\" lease=0 len=0",
+        "serve Ready \"\" lease=0 code=404",
+        "close Ready",
+        "request-log file open failed; this log was dropped",
+        "BUSBAR-7074",
+        busbar_export_file::NO_DISK_LANE,
+    ] {
+        assert!(joined.contains(want), "missing {want:?} in:\n{joined}");
+    }
+
+    // RED: the same door over settings that do not parse raises nothing on delivery.
+    let rr = Arc::new(Recorder::default());
+    let other: Plugin<Export> =
+        load_dropped(&cdylib(), &row.statement, bind(&d, rr.clone())).expect("dropped loads");
+    let c = transcript(&other, &rr, b"{}");
+    assert_ne!(
+        c, a,
+        "an unconfigured sink must not answer as a configured one"
     );
+    assert!(!c.join("\n").contains("BUSBAR-7074"));
+}
+
+/// The door is refused as another kind, and against a Statement that is not its own.
+#[test]
+fn the_door_is_refused_as_another_kind_or_statement() {
+    let d = Dispatcher::new(DispatchConfig::default());
+    let row = LinkedRow::of(busbar_export_file::door).expect("the door states itself");
+    let rec = Arc::new(Recorder::default());
+    assert!(load_linked::<Hook>(&row, bind(&d, rec.clone())).is_err());
+    assert!(load_dropped::<Hook>(&cdylib(), &row.statement, bind(&d, rec.clone())).is_err());
+
+    let mut other = row.statement.clone();
+    let last = other.len() - 1;
+    other[last] ^= 1;
+    let refused = load_dropped::<Export>(&cdylib(), &other, bind(&d, rec));
+    assert!(matches!(refused, Err(LoadError::StatementMismatch)));
 }
