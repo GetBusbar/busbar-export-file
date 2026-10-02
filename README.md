@@ -5,7 +5,7 @@ First-party signed kind:export plugin cdylib: the request-log FILE sink (module:
 
 | kind | alias | crate | busbar | license |
 |---|---|---|---|---|
-| `export` | `request-log-file` | `busbar-export-file-plugin` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
+| `export` | `request-log-file` | `busbar-export-file-plugin` | 1.6.0 (pinned in `.busbar-ref`) | MIT |
 
 [![ci](https://github.com/GetBusbar/busbar-export-file/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/GetBusbar/busbar-export-file/actions/workflows/ci.yml)
 <!-- fleet:header:end -->
