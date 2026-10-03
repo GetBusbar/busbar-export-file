@@ -81,6 +81,7 @@ version = "1.5.0"
 dependencies = [
  "busbar-contract",
  "busbar-export-file",
+ "busbar-export-file-plugin",
  "busbar-plugin-loader",
 ]
 
