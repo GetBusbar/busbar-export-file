@@ -93,36 +93,108 @@ fn field(fields: &[(String, String)], name: &str) -> String {
         .unwrap_or_else(|| panic!("no `{name}` field in {fields:?}"))
 }
 
-/// A configured delivery the host cannot append is ONE open-failed line, naming the path and why;
-/// an empty batch, or an instance whose settings did not parse, writes and raises nothing.
+const TICKET: busbar_contract::abi::mechanism::ticket::Ticket =
+    busbar_contract::abi::mechanism::ticket::Ticket {
+        slot: 1,
+        generation: 1,
+    };
+
+fn report(rotated: u8, faults: u8, written: u64) -> DiskWritten {
+    DiskWritten {
+        size: size_of::<DiskWritten>() as u32,
+        rotated,
+        faults,
+        _reserved: [0; 2],
+        written,
+    }
+}
+
+fn failed(step: u64, why: &str) -> Result<DiskWritten, DiskFailure> {
+    Err(DiskFailure {
+        step,
+        rotation: report(0, 0, 0),
+        why: ConnFailure::Failed(why.to_string()),
+    })
+}
+
+/// A batch lands through the host's disk lane: an instance whose settings did not parse, or an
+/// empty batch, asks the host nothing; one with no host tables answers that it was handed none.
 #[test]
-fn a_delivery_with_no_disk_lane_is_one_open_failed_line() {
+fn a_delivery_asks_the_host_only_with_a_path_and_a_batch() {
     let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 2}));
-    let events = logged(|| s.deliver(b"{\"outcome\":\"ok\",\"ts\":1}\n"));
+    assert_eq!(s.append(None, TICKET, b""), Poll::Ready(None));
+    let unparsed = sink(serde_json::json!({"rotate_mb": 2}));
+    assert_eq!(unparsed.append(None, TICKET, b"{}\n"), Poll::Ready(None));
+    match s.append(None, TICKET, b"{}\n") {
+        Poll::Ready(Some(Err(f))) => assert_eq!(f.why, ConnFailure::Unarmed),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// An append the host could not open for is ONE open-failed line, naming the path and the host's
+/// words; one whose write failed is ONE append-failed line; a landed batch raises nothing.
+#[test]
+fn a_dropped_batch_is_one_line_naming_the_step_the_host_failed() {
+    let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 2}));
+    let events = logged(|| s.settle(&failed(0, "No such file or directory (os error 2)")));
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(field(&events[0], "diag"), OPEN_FAILED);
     assert_eq!(field(&events[0], "path"), "/var/log/x.jsonl");
-    assert_eq!(field(&events[0], "error"), NO_DISK_LANE);
+    assert_eq!(
+        field(&events[0], "error"),
+        "No such file or directory (os error 2)"
+    );
     assert_eq!(
         field(&events[0], "message"),
         "request-log file open failed; this log was dropped"
     );
-    assert!(logged(|| s.deliver(b"")).is_empty());
-    let unparsed = sink(serde_json::json!({"rotate_mb": 2}));
-    assert!(logged(|| unparsed.deliver(b"{}\n")).is_empty());
+    let events = logged(|| {
+        s.settle(&failed(
+            busbar_contract::abi::host::service::DISK_APPEND_FAILED,
+            "No space left on device (os error 28)",
+        ));
+    });
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(field(&events[0], "diag"), APPEND_FAILED);
+    assert_eq!(
+        field(&events[0], "message"),
+        "request-log file append failed; this log was dropped"
+    );
+    assert!(logged(|| s.settle(&Ok(report(0, 0, 3)))).is_empty());
+}
+
+/// A rotation the host ran before the append is raised as it happened: each failed step under its
+/// declared code (retention, shift, rename), then the rotation itself when the file was renamed.
+#[test]
+fn a_rotation_is_raised_step_by_step() {
+    let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 1}));
+    let events = logged(|| s.settle(&Ok(report(DISK_ROTATED, 0, 3))));
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(field(&events[0], "archive"), "/var/log/x.jsonl.1");
+    assert_eq!(
+        field(&events[0], "message"),
+        "request-log file rotated by rename"
+    );
+    let all = DISK_RETENTION_FAILED | DISK_SHIFT_FAILED | DISK_RENAME_FAILED;
+    let events = logged(|| s.settle(&Ok(report(0, all, 3))));
+    let codes: Vec<String> = events.iter().map(|e| field(e, "diag")).collect();
+    assert_eq!(
+        codes,
+        [RETENTION_FAILED, SHIFT_FAILED, ROTATE_RENAME_FAILED]
+    );
 }
 
 /// A reload's settings replace the instance's: unparsed settings stop the deliveries, good ones
-/// resume them.
+/// resume them at the new path.
 #[test]
 fn a_refresh_replaces_the_settings() {
     let s = sink(serde_json::json!({"path": "/a"}));
     s.refresh(b"{}", &[], 2).expect("a refresh applies");
-    assert!(logged(|| s.deliver(b"{}\n")).is_empty());
+    assert_eq!(s.path(), None);
+    assert_eq!(s.append(None, TICKET, b"{}\n"), Poll::Ready(None));
     s.refresh(br#"{"path":"/b"}"#, &[], 3)
         .expect("a refresh applies");
-    let events = logged(|| s.deliver(b"{}\n"));
-    assert_eq!(field(&events[0], "path"), "/b");
+    assert_eq!(s.path().as_deref(), Some("/b"));
 }
 
 /// The code a delivery raises and the destination it names are the ones the manifest DECLARES,
@@ -136,7 +208,15 @@ fn what_the_sink_raises_is_declared() {
         .iter()
         .map(|x| format!("BUSBAR-{}", x["code"]))
         .collect();
-    assert!(codes.contains(&OPEN_FAILED.to_string()));
+    for code in [
+        APPEND_FAILED,
+        OPEN_FAILED,
+        RETENTION_FAILED,
+        SHIFT_FAILED,
+        ROTATE_RENAME_FAILED,
+    ] {
+        assert!(codes.contains(&code.to_string()), "{code}");
+    }
     let shed: Vec<&str> = d["metrics"]
         .as_array()
         .unwrap()
