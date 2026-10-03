@@ -287,8 +287,9 @@ fn the_linked_and_the_dropped_in_file_sink_are_one_sink() {
     let b = transcript(&dropped, &dr, SETTINGS);
     assert_eq!(a, b, "the two doors are not one sink");
 
-    // What the script did: the settings refusals in the grammar's words, a dropped delivery raised
-    // under the open-failed code, a push sink's empty answers.
+    // What the script did: the settings refusals in the grammar's words, a delivery on no ticket
+    // (it cannot pend on the host's disk lane) dropped under the open-failed code, a push sink's
+    // empty answers.
     let joined = a.join("\n");
     for want in [
         "validate Ready \"\"",
@@ -304,7 +305,6 @@ fn the_linked_and_the_dropped_in_file_sink_are_one_sink() {
         "close Ready",
         "request-log file open failed; this log was dropped",
         "BUSBAR-7074",
-        busbar_export_file::NO_DISK_LANE,
     ] {
         assert!(joined.contains(want), "missing {want:?} in:\n{joined}");
     }
