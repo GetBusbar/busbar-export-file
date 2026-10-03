@@ -1,0 +1,25 @@
+{
+  "settings": { "path": "/var/log/requests.jsonl", "rotate_mb": 1 },
+  "export": {
+    "bad_settings": [
+      { "settings": {}, "refusal": "settings: missing field `path`" },
+      { "settings": { "path": "/x", "rotate": 1 },
+        "refusal": "settings: unknown field `rotate`, expected `path` or `rotate_mb`" },
+      { "settings": { "path": "/x", "rotate_mb": "one" },
+        "refusal": "settings: invalid type: string \"one\", expected u64" }
+    ],
+    "deliver": [
+      { "stream": "logs",
+        "batch": "{\"outcome\":\"ok\",\"ts\":1}\n",
+        "observed": [
+          "request-log file open failed; this log was dropped",
+          "BUSBAR-7074",
+          "the host lends this sink no disk lane (disk.append) on this busbar revision"
+        ] }
+    ],
+    "scrape": [ { "families": [], "cap": 64, "exposition": "" } ],
+    "status": { "outcome": "Ready" },
+    "check": { "outcome": "Ready" },
+    "serve": [ { "method": "GET", "path": "/exports/tail/x", "outcome": "Ready", "status_code": 404 } ]
+  }
+}
