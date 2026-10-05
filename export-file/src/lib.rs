@@ -12,9 +12,12 @@
 //!
 //! **The sink never opens a path.** Its manifest declares `path` a DESTINATION: the host binds the
 //! operator's configured path, and every append and every rotation is a host act on the host's
-//! bounded disk lane (THE DESIGN §11.11 R4, the `disk.append` service of §11.12). That service is
-//! not in the host table this sink is built against, so a delivery is dropped with the sink's
-//! open-failed line ([`OPEN_FAILED`]) naming why, in the words it always raised.
+//! bounded disk lane (THE DESIGN §11.11 R4, the `disk.append` service of §11.12): a delivery hands
+//! the batch, unchanged, to `disk.append` under the key `path`, and the host appends it whole —
+//! rotating the file by rename first when it already holds `rotate_mb` MiB. What the host reports
+//! back is raised in the words the sink always raised: an append the host could not make drops the
+//! batch with the open-failed ([`OPEN_FAILED`]) or append-failed ([`APPEND_FAILED`]) line, and each
+//! failed step of a rotation with its own declared code.
 //!
 //! Settings are validated by the sink itself while the host validates the configuration, with the
 //! same serde shape ([`config::FileSettings`]) and so the same words.
@@ -25,13 +28,19 @@ pub mod config;
 
 use std::mem::size_of;
 use std::sync::{PoisonError, RwLock};
+use std::task::Poll;
 
 use busbar_contract::abi::export::{
     self, CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
     StatusOut, Tail,
 };
+use busbar_contract::abi::host::service::{
+    DiskWritten, DISK_APPEND_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED, DISK_ROTATED,
+    DISK_SHIFT_FAILED,
+};
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement, REWRITE_ALIAS};
+use busbar_contract::abi::sdk::conn::{ConnFailure, DiskFailure, Host};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
@@ -59,12 +68,16 @@ pub const MAX_INFLIGHT: u32 = 64;
 /// The declared destination: the settings key naming the file.
 pub const DESTINATION: &str = "path";
 
+/// The catalogue code a dropped line is raised under: writing the opened file failed.
+pub const APPEND_FAILED: &str = "BUSBAR-7073";
 /// The catalogue code a dropped line is raised under: the file could not be opened for the append.
 pub const OPEN_FAILED: &str = "BUSBAR-7074";
-
-/// Why an append is dropped on this busbar revision: the host lends no disk lane.
-pub const NO_DISK_LANE: &str =
-    "the host lends this sink no disk lane (disk.append) on this busbar revision";
+/// The catalogue code a rotation raises when dropping the oldest archive failed.
+pub const RETENTION_FAILED: &str = "BUSBAR-7075";
+/// The catalogue code a rotation raises when shifting an archive up one slot failed.
+pub const SHIFT_FAILED: &str = "BUSBAR-7076";
+/// The catalogue code a rotation raises when renaming the live file to its first archive failed.
+pub const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
 
 /// The streams this sink carries: the request log.
 const STREAMS: &[u8] = &[ExportStream::Logs as u8];
@@ -143,33 +156,105 @@ impl Life for FileSink {
 }
 
 impl FileSink {
-    /// Have the host append `batch` (JSON lines) to the destination; a failed append drops it with
-    /// the open-failed line.
-    pub fn deliver(&self, batch: &[u8]) {
-        let settings = self.settings.read().unwrap_or_else(PoisonError::into_inner);
-        let Some(s) = settings.as_ref() else {
-            return;
-        };
-        if batch.is_empty() {
-            return;
+    /// The configured path; `None` when the settings did not parse (the instance writes nothing).
+    pub fn path(&self) -> Option<String> {
+        self.settings
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|s| s.path.clone())
+    }
+
+    /// Have the host append `batch` (JSON lines, unchanged) to the destination on `host`'s disk
+    /// lane, under the op running on `ticket`: what [`Connector::disk_append`] answered. An instance
+    /// whose settings did not parse, or an empty batch, appends nothing and answers at once.
+    ///
+    /// [`Connector::disk_append`]: busbar_contract::abi::sdk::conn::Connector::disk_append
+    pub fn append(
+        &self,
+        host: Option<&Host>,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        batch: &[u8],
+    ) -> Poll<Option<Result<DiskWritten, DiskFailure>>> {
+        if batch.is_empty() || self.path().is_none() {
+            return Poll::Ready(None);
         }
-        if let Err(error) = disk_append(DESTINATION, batch) {
-            tracing::warn!(diag = %OPEN_FAILED, path = %s.path, error = %error, "request-log file open failed; this log was dropped");
+        let Some(host) = host else {
+            return Poll::Ready(Some(Err(DiskFailure {
+                step: 0,
+                rotation: no_rotation(),
+                why: ConnFailure::Unarmed,
+            })));
+        };
+        host.connector(ticket)
+            .disk_append(DESTINATION, batch)
+            .map(Some)
+    }
+
+    /// Raise what the host reported for one append, in the order it happened: each failed step of
+    /// the rotation that ran before it, the rotation itself, then — when the batch did not land —
+    /// the line that says it was dropped.
+    pub fn settle(&self, answer: &Result<DiskWritten, DiskFailure>) {
+        let path = self.path().unwrap_or_default();
+        let rotation = match answer {
+            Ok(w) => *w,
+            Err(f) => f.rotation,
+        };
+        if rotation.faults & DISK_RETENTION_FAILED != 0 {
+            tracing::warn!(
+                diag = %RETENTION_FAILED,
+                archive = %format!("{path}.{ROTATE_ARCHIVE_LIMIT}"),
+                "request-log archive retention cleanup failed; the archive series may exceed ROTATE_ARCHIVE_LIMIT"
+            );
+        }
+        if rotation.faults & DISK_SHIFT_FAILED != 0 {
+            tracing::warn!(
+                diag = %SHIFT_FAILED,
+                path = %path,
+                "request-log archive shift failed; older archive left in place rather than lost"
+            );
+        }
+        if rotation.faults & DISK_RENAME_FAILED != 0 {
+            tracing::warn!(
+                diag = %ROTATE_RENAME_FAILED,
+                path = %path,
+                "request-log file rotation rename failed; continuing to APPEND to the current file \
+                 rather than truncate it, so no recorded data is lost — the file will exceed rotate_mb \
+                 until this is resolved"
+            );
+        }
+        if rotation.rotated == DISK_ROTATED {
+            tracing::info!(path = %path, archive = %format!("{path}.1"), "request-log file rotated by rename");
+        }
+        match answer {
+            Ok(_) => {}
+            Err(f) if f.step == DISK_APPEND_FAILED => {
+                tracing::warn!(diag = %APPEND_FAILED, path = %path, error = %f.why, "request-log file append failed; this log was dropped");
+            }
+            Err(f) => {
+                tracing::warn!(diag = %OPEN_FAILED, path = %path, error = %f.why, "request-log file open failed; this log was dropped");
+            }
         }
     }
 }
 
-/// The host's disk lane: append `bytes` to the destination `key` names. Not in the host table this
-/// sink is built against, so every append fails naming that.
-fn disk_append(key: &str, bytes: &[u8]) -> Result<(), &'static str> {
-    let _ = (key, bytes);
-    Err(NO_DISK_LANE)
+/// A report of no rotation.
+const fn no_rotation() -> DiskWritten {
+    DiskWritten {
+        size: 0,
+        rotated: 0,
+        faults: 0,
+        _reserved: [0; 2],
+        written: 0,
+    }
 }
 
 /// The instance state every slot reads.
 type State = Held<FileSink>;
 
-/// `deliver`: [`FileSink::deliver`]; fire-and-forget, so READY whatever became of the line.
+/// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
+/// while the host appends; fire-and-forget, so READY whatever became of the line once the host
+/// answered ([`FileSink::settle`] raises what it reported).
 pub struct Deliver;
 
 impl SafeSlot for Deliver {
@@ -184,8 +269,24 @@ impl SafeSlot for Deliver {
         let Some(h) = instance.get() else {
             return Outcome::Refused;
         };
-        h.life().deliver(input.field(|i| &i.batch).bytes());
-        Outcome::Ready
+        // A resumed delivery re-issues the append it parked (the host answers its stored result);
+        // a fresh one appends the batch it was lent.
+        let parked = instance.resume::<Vec<u8>>();
+        let batch: &[u8] = match &parked {
+            Some(b) => b,
+            None => input.field(|i| &i.batch).bytes(),
+        };
+        match h.life().append(h.host(), instance.ticket(), batch) {
+            Poll::Pending => {
+                instance.park(batch.to_vec());
+                Outcome::Pending
+            }
+            Poll::Ready(Some(answer)) => {
+                h.life().settle(&answer);
+                Outcome::Ready
+            }
+            Poll::Ready(None) => Outcome::Ready,
+        }
     }
 }
 
