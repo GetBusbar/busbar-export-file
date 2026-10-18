@@ -136,7 +136,12 @@ fn a_delivery_asks_the_host_only_with_a_path_and_a_batch() {
 #[test]
 fn a_dropped_batch_is_one_line_naming_the_step_the_host_failed() {
     let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 2}));
-    let events = logged(|| s.settle(&failed(0, "No such file or directory (os error 2)")));
+    let events = logged(|| {
+        s.settle(&failed(
+            busbar_contract::abi::host::service::DISK_OPEN_FAILED,
+            "No such file or directory (os error 2)",
+        ))
+    });
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(field(&events[0], "diag"), OPEN_FAILED);
     assert_eq!(field(&events[0], "path"), "/var/log/x.jsonl");
