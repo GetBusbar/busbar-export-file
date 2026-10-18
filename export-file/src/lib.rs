@@ -7,8 +7,8 @@
 //! A `kind: export` plugin on the export kind's memory ABI (`busbar_contract::abi::export`, THE
 //! DESIGN §11): ONE door ([`door`], `plugin_door!`), linked into the binary as a compiled-in row or
 //! exported by the sibling `busbar-export-file-plugin` cdylib as its one symbol. Its manifest still
-//! carries [`DECLARES`] (`busbar-plugin-pack --declares-file declares.json`): the three series, the
-//! five catalogue codes and the one destination.
+//! carries [`DECLARES`] (`busbar-plugin-pack --declares-file declares.json`): its one series (1.5.5's
+//! shed counter), the five catalogue codes and the one destination.
 //!
 //! **The sink never opens a path.** Its manifest declares `path` a DESTINATION: the host binds the
 //! operator's configured path, and every append and every rotation is a host act on the host's
@@ -35,8 +35,8 @@ use busbar_contract::abi::export::{
     StatusOut, Tail,
 };
 use busbar_contract::abi::host::service::{
-    DiskWritten, DISK_APPEND_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED, DISK_ROTATED,
-    DISK_SHIFT_FAILED,
+    DiskWritten, DISK_APPEND_FAILED, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED,
+    DISK_ROTATED, DISK_SHIFT_FAILED,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement, REWRITE_ALIAS};
@@ -52,14 +52,14 @@ pub const NAME: &str = "busbar-export-file";
 /// The `module:` an operator writes — the frozen 1.5.x module name.
 pub const ALIAS: &str = "request-log-file";
 
-/// What this sink DECLARES to the host (the manifest's `declares` section): its three series, its
+/// What this sink DECLARES to the host (the manifest's `declares` section): its one series, its
 /// five catalogue codes and its one destination. The packer embeds it (`--declares-file`).
 pub const DECLARES: &str = include_str!("../declares.json");
 
 /// How many rotated archives ONE sink keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) before the
 /// oldest is dropped to make room for a new rotation: the retention the host's disk lane applies to
-/// this sink's destination. A RETENTION policy, not a truncation one.
-pub const ROTATE_ARCHIVE_LIMIT: u32 = 9;
+/// this sink's destination, the host's own constant. A RETENTION policy, not a truncation one.
+pub const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
 
 /// The most appends one instance holds in flight (1.5.5's `MAX_INFLIGHT_FILE_APPENDS`); past it the
 /// host sheds the line and counts the declared shed counter.
@@ -231,8 +231,13 @@ impl FileSink {
             Err(f) if f.step == DISK_APPEND_FAILED => {
                 tracing::warn!(diag = %APPEND_FAILED, path = %path, error = %f.why, "request-log file append failed; this log was dropped");
             }
-            Err(f) => {
+            Err(f) if f.step == DISK_OPEN_FAILED => {
                 tracing::warn!(diag = %OPEN_FAILED, path = %path, error = %f.why, "request-log file open failed; this log was dropped");
+            }
+            // The append never reached the disk (no host lane, no ticket, a refused destination, a
+            // fault): not a file-open problem, so not BUSBAR-7074 and its disk remedy.
+            Err(f) => {
+                tracing::warn!(path = %path, error = %f.why, "request-log append was not run by the host; this log was dropped");
             }
         }
     }
