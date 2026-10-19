@@ -14,7 +14,8 @@
 //! operator's configured path, and every append and every rotation is a host act on the host's
 //! bounded disk lane (THE DESIGN §11.11 R4, the `disk.append` service of §11.12): a delivery hands
 //! the batch, unchanged, to `disk.append` under the key `path`, and the host appends it whole —
-//! rotating the file by rename first when it already holds `rotate_mb` MiB. What the host reports
+//! rotating the file first when it already holds `rotate_mb` MiB, as the host's own rule says (1.5.5:
+//! truncated in place, and no line logged for it). What the host reports
 //! back is raised in the words the sink always raised: an append the host could not make drops the
 //! batch with the open-failed ([`OPEN_FAILED`]) or append-failed ([`APPEND_FAILED`]) line, and each
 //! failed step of a rotation with its own declared code.
@@ -36,7 +37,7 @@ use busbar_contract::abi::export::{
 };
 use busbar_contract::abi::host::service::{
     DiskWritten, DISK_APPEND_FAILED, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED,
-    DISK_ROTATED, DISK_SHIFT_FAILED,
+    DISK_SHIFT_FAILED,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement, REWRITE_ALIAS};
@@ -223,9 +224,8 @@ impl FileSink {
                  until this is resolved"
             );
         }
-        if rotation.rotated == DISK_ROTATED {
-            tracing::info!(path = %path, archive = %format!("{path}.1"), "request-log file rotated by rename");
-        }
+        // A rotation that ran cleanly is logged by nothing, as 1.5.5 logged nothing when it
+        // truncated the file in place (v1.5.5 crates/busbar/src/export/file.rs:96-108; Q128 arch u50).
         match answer {
             Ok(_) => {}
             Err(f) if f.step == DISK_APPEND_FAILED => {

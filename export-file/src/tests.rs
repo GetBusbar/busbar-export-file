@@ -6,6 +6,7 @@
 //! crate's `tests/conformance.rs`.
 
 use super::*;
+use busbar_contract::abi::host::service::DISK_ROTATED;
 use std::sync::{Arc, Mutex};
 
 fn sink(settings: serde_json::Value) -> FileSink {
@@ -176,7 +177,10 @@ fn a_dropped_batch_is_one_line_naming_the_step_the_host_failed() {
 fn a_rotation_is_raised_step_by_step() {
     let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 1}));
     let events = logged(|| s.settle(&Ok(report(DISK_ROTATED, 0, 3))));
-    assert!(events.is_empty(), "a clean rotation logs nothing: {events:?}");
+    assert!(
+        events.is_empty(),
+        "a clean rotation logs nothing: {events:?}"
+    );
     let all = DISK_RETENTION_FAILED | DISK_SHIFT_FAILED | DISK_RENAME_FAILED;
     let events = logged(|| s.settle(&Ok(report(0, all, 3))));
     let codes: Vec<String> = events.iter().map(|e| field(e, "diag")).collect();

@@ -19,7 +19,8 @@ First-party signed kind:export plugin cdylib: the request-log FILE sink (module:
 Configured from an `export.<name>.module: request-log-file` block. Its `settings:` are:
 
 - `path` (required): the JSONL file each request-log line is appended to.
-- `rotate_mb` (optional, MiB): the size at which the file is rotated by rename; absent means never rotate.
+- `rotate_mb` (optional, MiB): the size at which the host truncates the file in place and starts it
+  afresh, as 1.5.5 did; absent means never rotate.
 
 ## Build
 
