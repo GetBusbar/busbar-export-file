@@ -168,18 +168,15 @@ fn a_dropped_batch_is_one_line_naming_the_step_the_host_failed() {
     assert!(logged(|| s.settle(&Ok(report(0, 0, 3)))).is_empty());
 }
 
-/// A rotation the host ran before the append is raised as it happened: each failed step under its
-/// declared code (retention, shift, rename), then the rotation itself when the file was renamed.
+/// A rotation the host ran before the append is raised as 1.5.5 raised it: a rotation that ran
+/// cleanly logs NOTHING (v1.5.5 crates/busbar/src/export/file.rs:96-108 truncated in place and logged
+/// no line for it; Q128 arch u50), and each failed step is raised under its declared code (retention,
+/// shift, rename). RED before the fix: a clean rotation logged "request-log file rotated by rename".
 #[test]
 fn a_rotation_is_raised_step_by_step() {
     let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 1}));
     let events = logged(|| s.settle(&Ok(report(DISK_ROTATED, 0, 3))));
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(field(&events[0], "archive"), "/var/log/x.jsonl.1");
-    assert_eq!(
-        field(&events[0], "message"),
-        "request-log file rotated by rename"
-    );
+    assert!(events.is_empty(), "a clean rotation logs nothing: {events:?}");
     let all = DISK_RETENTION_FAILED | DISK_SHIFT_FAILED | DISK_RENAME_FAILED;
     let events = logged(|| s.settle(&Ok(report(0, all, 3))));
     let codes: Vec<String> = events.iter().map(|e| field(e, "diag")).collect();
