@@ -8,6 +8,9 @@ rust-version = "1.97"
 description = "The request-log FILE export sink (`module: request-log-file`): appends each request-log line as JSONL, rotating by rename at `rotate_mb`. Every file act is performed by the host on the destination it opened for the operator's configured path; the sink never opens a path."
 license = "Apache-2.0"
 
+[lints]
+workspace = true
+
 [lib]
 # rlib: THE LOGIC and its door. A build that LINKS this crate registers `door` as its compiled-in
 # row (no symbol is exported from here); the sibling `busbar-export-file-plugin` cdylib exports the

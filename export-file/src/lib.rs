@@ -87,11 +87,13 @@ const TAIL: Tail = Tail {
     head: KindTailHead {
         size: size_of::<Tail>() as u32,
         _reserved: 0,
+        ..KindTailHead::ZERO
     },
     streams: STREAMS.as_ptr(),
     streams_len: STREAMS.len(),
     routes: std::ptr::null(),
     routes_len: 0,
+    ..Tail::ZERO
 };
 
 /// The module name an operator writes, as the alias the registry holds beside [`NAME`].
@@ -102,7 +104,9 @@ const REWRITES: &[Rewrite] = &[Rewrite {
     to: AbiStr {
         ptr: std::ptr::null(),
         len: 0,
+        ..AbiStr::ZERO
     },
+    ..Rewrite::ZERO
 }];
 
 /// This plugin's Statement: its name, version, in-flight bound, alias and stream.
@@ -251,6 +255,7 @@ const fn no_rotation() -> DiskWritten {
         faults: 0,
         _reserved: [0; 2],
         written: 0,
+        ..DiskWritten::ZERO
     }
 }
 

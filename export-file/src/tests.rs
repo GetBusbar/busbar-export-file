@@ -97,6 +97,7 @@ const TICKET: busbar_contract::abi::mechanism::ticket::Ticket =
     busbar_contract::abi::mechanism::ticket::Ticket {
         slot: 1,
         generation: 1,
+        ..busbar_contract::abi::mechanism::ticket::Ticket::ZERO
     };
 
 fn report(rotated: u8, faults: u8, written: u64) -> DiskWritten {
@@ -106,6 +107,7 @@ fn report(rotated: u8, faults: u8, written: u64) -> DiskWritten {
         faults,
         _reserved: [0; 2],
         written,
+        ..DiskWritten::ZERO
     }
 }
 
