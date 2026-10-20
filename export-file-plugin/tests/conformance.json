@@ -12,7 +12,8 @@
       { "stream": "logs",
         "batch": "{\"outcome\":\"ok\",\"ts\":1}\n",
         "observed": [
-          "request-log append was not run by the host; this log was dropped"
+          "request-log file append failed; this log was dropped",
+          "BUSBAR-7073"
         ] }
     ],
     "scrape": [ { "families": [], "cap": 64, "exposition": "" } ],

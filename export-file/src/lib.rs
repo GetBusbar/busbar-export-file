@@ -35,8 +35,8 @@ use busbar_contract::abi::export::{
     StatusOut, Tail,
 };
 use busbar_contract::abi::host::service::{
-    DiskWritten, DISK_APPEND_FAILED, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED,
-    DISK_ROTATED, DISK_SHIFT_FAILED,
+    DiskWritten, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED, DISK_ROTATED,
+    DISK_SHIFT_FAILED,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement, REWRITE_ALIAS};
@@ -228,16 +228,17 @@ impl FileSink {
         }
         match answer {
             Ok(_) => {}
-            Err(f) if f.step == DISK_APPEND_FAILED => {
-                tracing::warn!(diag = %APPEND_FAILED, path = %path, error = %f.why, "request-log file append failed; this log was dropped");
-            }
+            // The host could not open the file for the append: the file it could not open, a
+            // destination it never opened (one this sink was not granted), or its disk lane full.
             Err(f) if f.step == DISK_OPEN_FAILED => {
                 tracing::warn!(diag = %OPEN_FAILED, path = %path, error = %f.why, "request-log file open failed; this log was dropped");
             }
-            // The append never reached the disk (no host lane, no ticket, a refused destination, a
-            // fault): not a file-open problem, so not BUSBAR-7074 and its disk remedy.
+            // Every other append that did not land is the append-failed line, in the host's words:
+            // the write itself failed, or the append was never run (no ticket, no disk service, a
+            // fault), which is no file-open problem, so not BUSBAR-7074 and its disk remedy. A
+            // plugin speaks only over the ABI (Part 2 #2): every dropped batch carries a declared code.
             Err(f) => {
-                tracing::warn!(path = %path, error = %f.why, "request-log append was not run by the host; this log was dropped");
+                tracing::warn!(diag = %APPEND_FAILED, path = %path, error = %f.why, "request-log file append failed; this log was dropped");
             }
         }
     }

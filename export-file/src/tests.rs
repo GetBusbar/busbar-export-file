@@ -132,7 +132,8 @@ fn a_delivery_asks_the_host_only_with_a_path_and_a_batch() {
 }
 
 /// An append the host could not open for is ONE open-failed line, naming the path and the host's
-/// words; one whose write failed is ONE append-failed line; a landed batch raises nothing.
+/// words; one whose write failed, or one the host never ran, is ONE append-failed line; a landed
+/// batch raises nothing.
 #[test]
 fn a_dropped_batch_is_one_line_naming_the_step_the_host_failed() {
     let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 2}));
@@ -158,6 +159,22 @@ fn a_dropped_batch_is_one_line_naming_the_step_the_host_failed() {
             busbar_contract::abi::host::service::DISK_APPEND_FAILED,
             "No space left on device (os error 28)",
         ));
+    });
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(field(&events[0], "diag"), APPEND_FAILED);
+    assert_eq!(
+        field(&events[0], "message"),
+        "request-log file append failed; this log was dropped"
+    );
+    // An append the host never ran (no ticket: step 0) is no open failure, and still a declared
+    // line: the append-failed one, never an uncoded warning (a plugin speaks only over the ABI,
+    // Part 2 #2). RED before: an uncoded "was not run by the host" warning with no `diag`.
+    let events = logged(|| {
+        s.settle(&Err(DiskFailure {
+            step: 0,
+            rotation: report(0, 0, 0),
+            why: ConnFailure::NoTicket,
+        }));
     });
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(field(&events[0], "diag"), APPEND_FAILED);
