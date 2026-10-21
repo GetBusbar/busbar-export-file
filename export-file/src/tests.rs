@@ -223,7 +223,8 @@ fn a_refresh_replaces_the_settings() {
 /// and the dropped counter is the declared SHED counter.
 #[test]
 fn what_the_sink_raises_is_declared() {
-    let d: serde_json::Value = serde_json::from_str(DECLARES).expect("declares.json parses");
+    let d: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../declares.json")).expect("declares.json parses");
     let codes: Vec<String> = d["diagnostics"]
         .as_array()
         .unwrap()

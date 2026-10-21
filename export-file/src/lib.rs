@@ -7,7 +7,7 @@
 //! A `kind: export` plugin on the export kind's memory ABI (`busbar_contract::abi::export`, THE
 //! DESIGN §11): ONE door ([`door`], `plugin_door!`), linked into the binary as a compiled-in row or
 //! exported by the sibling `busbar-export-file-plugin` cdylib as its one symbol. Its manifest still
-//! carries [`DECLARES`] (`busbar-plugin-pack --declares-file declares.json`): its one series (1.5.5's
+//! carries `DECLARES` (`busbar-plugin-pack --declares-file declares.json`): its one series (1.5.5's
 //! shed counter), the five catalogue codes and the one destination.
 //!
 //! **The sink never opens a path.** Its manifest declares `path` a DESTINATION: the host binds the
@@ -16,15 +16,15 @@
 //! the batch, unchanged, to `disk.append` under the key `path`, and the host appends it whole —
 //! rotating the file by rename first when it already holds `rotate_mb` MiB. What the host reports
 //! back is raised in the words the sink always raised: an append the host could not make drops the
-//! batch with the open-failed ([`OPEN_FAILED`]) or append-failed ([`APPEND_FAILED`]) line, and each
+//! batch with the open-failed (`OPEN_FAILED`) or append-failed (`APPEND_FAILED`) line, and each
 //! failed step of a rotation with its own declared code.
 //!
 //! Settings are validated by the sink itself while the host validates the configuration, with the
-//! same serde shape ([`config::FileSettings`]) and so the same words.
+//! same serde shape (`config::FileSettings`) and so the same words.
 
 #![forbid(unsafe_code)]
 
-pub mod config;
+mod config;
 
 use std::mem::size_of;
 use std::sync::{PoisonError, RwLock};
@@ -47,37 +47,43 @@ use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use config::FileSettings;
 
 /// The plugin's canonical name.
-pub const NAME: &str = "busbar-export-file";
+const NAME: &str = "busbar-export-file";
 
 /// The `module:` an operator writes — the frozen 1.5.x module name.
-pub const ALIAS: &str = "request-log-file";
+const ALIAS: &str = "request-log-file";
 
-/// What this sink DECLARES to the host (the manifest's `declares` section): its one series, its
-/// five catalogue codes and its one destination. The packer embeds it (`--declares-file`).
-pub const DECLARES: &str = include_str!("../declares.json");
+busbar_contract::statement_extensions!(
+    /// The Statement's extensions: this plugin's whole `declares` document (BUSBAR-1.6.0.md l.246): its
+    /// one series, its five catalogue codes and its one destination. The packer embeds the same file
+    /// (`--declares-file`).
+    EXTENSIONS: [(
+        busbar_contract::abi::mechanism::extensions::EXT_DECLARES,
+        include_bytes!("../declares.json"),
+    )]
+);
 
 /// How many rotated archives ONE sink keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) before the
 /// oldest is dropped to make room for a new rotation: the retention the host's disk lane applies to
 /// this sink's destination, the host's own constant. A RETENTION policy, not a truncation one.
-pub const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
+const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
 
 /// The most appends one instance holds in flight (1.5.5's `MAX_INFLIGHT_FILE_APPENDS`); past it the
 /// host sheds the line and counts the declared shed counter.
-pub const MAX_INFLIGHT: u32 = 64;
+const MAX_INFLIGHT: u32 = 64;
 
 /// The declared destination: the settings key naming the file.
-pub const DESTINATION: &str = "path";
+const DESTINATION: &str = "path";
 
 /// The catalogue code a dropped line is raised under: writing the opened file failed.
-pub const APPEND_FAILED: &str = "BUSBAR-7073";
+const APPEND_FAILED: &str = "BUSBAR-7073";
 /// The catalogue code a dropped line is raised under: the file could not be opened for the append.
-pub const OPEN_FAILED: &str = "BUSBAR-7074";
+const OPEN_FAILED: &str = "BUSBAR-7074";
 /// The catalogue code a rotation raises when dropping the oldest archive failed.
-pub const RETENTION_FAILED: &str = "BUSBAR-7075";
+const RETENTION_FAILED: &str = "BUSBAR-7075";
 /// The catalogue code a rotation raises when shifting an archive up one slot failed.
-pub const SHIFT_FAILED: &str = "BUSBAR-7076";
+const SHIFT_FAILED: &str = "BUSBAR-7076";
 /// The catalogue code a rotation raises when renaming the live file to its first archive failed.
-pub const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
+const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
 
 /// The streams this sink carries: the request log.
 const STREAMS: &[u8] = &[ExportStream::Logs as u8];
@@ -106,10 +112,11 @@ const REWRITES: &[Rewrite] = &[Rewrite {
 }];
 
 /// This plugin's Statement: its name, version, in-flight bound, alias and stream.
-pub const STATEMENT: Statement = Statement {
+const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
     rewrites: REWRITES.as_ptr(),
     rewrites_len: REWRITES.len(),
+    extensions: EXTENSIONS,
     ..statement(NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT)
 };
 
@@ -123,7 +130,7 @@ fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
 
 /// One opened instance.
 #[derive(Debug)]
-pub struct FileSink {
+struct FileSink {
     /// The instance's settings; `None` when they do not parse (validation already refused them, so
     /// an instance that got this far is never configured that way — it simply writes nothing).
     settings: RwLock<Option<FileSettings>>,
@@ -266,7 +273,7 @@ type State = Held<FileSink>;
 /// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
 /// while the host appends; fire-and-forget, so READY whatever became of the line once the host
 /// answered ([`FileSink::settle`] raises what it reported).
-pub struct Deliver;
+struct Deliver;
 
 impl SafeSlot for Deliver {
     type In = DeliverIn;
@@ -305,7 +312,7 @@ impl SafeSlot for Deliver {
 }
 
 /// `scrape`: a push sink renders no exposition.
-pub struct Scrape;
+struct Scrape;
 
 impl SafeSlot for Scrape {
     type In = ScrapeIn;
@@ -317,7 +324,7 @@ impl SafeSlot for Scrape {
 }
 
 /// `status`: nothing to report.
-pub struct Status;
+struct Status;
 
 impl SafeSlot for Status {
     type In = InHead;
@@ -329,7 +336,7 @@ impl SafeSlot for Status {
 }
 
 /// `check`: no check across instances; each instance's settings are `validate`'s.
-pub struct Check;
+struct Check;
 
 impl SafeSlot for Check {
     type In = CheckIn;
@@ -341,7 +348,7 @@ impl SafeSlot for Check {
 }
 
 /// `serve`: no route, so any request is `404`.
-pub struct Serve;
+struct Serve;
 
 impl SafeSlot for Serve {
     type In = ServeIn;
@@ -367,7 +374,8 @@ mod table {
     }
 }
 
-/// This plugin's door: the one a compiled-in build links and the dropped-in image exports.
+/// THE DOOR: this plugin's one public item (BUSBAR-1.6.0.md l.3567, Crate shape); the one a compiled-in
+/// build links and the dropped-in image exports.
 pub use table::door;
 
 #[cfg(test)]
