@@ -58,7 +58,7 @@ busbar_contract::statement_extensions!(
     /// (`--declares-file`).
     EXTENSIONS: [(
         busbar_contract::abi::mechanism::extensions::EXT_DECLARES,
-        include_bytes!("../declares.json"),
+        include_bytes!("../declares.json")
     )]
 );
 
