@@ -195,7 +195,12 @@ impl FileSink {
     /// the rotation that ran before it, the rotation itself, then — when the batch did not land —
     /// the line that says it was dropped.
     pub fn settle(&self, answer: &Result<DiskWritten, DiskFailure>) {
-        let path = self.path().unwrap_or_default();
+        self.settle_at(&self.path().unwrap_or_default(), answer);
+    }
+
+    /// [`FileSink::settle`] naming `path`: the file the append was issued against, which a reload
+    /// that landed while the append was pending may have replaced in the settings.
+    pub fn settle_at(&self, path: &str, answer: &Result<DiskWritten, DiskFailure>) {
         let rotation = match answer {
             Ok(w) => *w,
             Err(f) => f.rotation,
@@ -277,18 +282,21 @@ impl SafeSlot for Deliver {
         };
         // A resumed delivery re-issues the append it parked (the host answers its stored result);
         // a fresh one appends the batch it was lent.
-        let parked = instance.resume::<Vec<u8>>();
-        let batch: &[u8] = match &parked {
-            Some(b) => b,
-            None => input.field(|i| &i.batch).bytes(),
-        };
+        // The batch is the lent `in`, which a resume re-presents from continuation-owned memory
+        // (spec A.5), so it is never copied. What is parked is the path the append was issued
+        // against, so the lines a late answer raises name that file, not a reload's new one.
+        let issued_at: String = instance
+            .resume::<String>()
+            .map(|p| *p)
+            .unwrap_or_else(|| h.life().path().unwrap_or_default());
+        let batch: &[u8] = input.field(|i| &i.batch).bytes();
         match h.life().append(h.host(), instance.ticket(), batch) {
             Poll::Pending => {
-                instance.park(batch.to_vec());
+                instance.park(issued_at);
                 Outcome::Pending
             }
             Poll::Ready(Some(answer)) => {
-                h.life().settle(&answer);
+                h.life().settle_at(&issued_at, &answer);
                 Outcome::Ready
             }
             Poll::Ready(None) => Outcome::Ready,
