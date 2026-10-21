@@ -6,6 +6,7 @@
 //! crate's `tests/conformance.rs`.
 
 use super::*;
+use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
 fn sink(settings: serde_json::Value) -> FileSink {
@@ -424,15 +425,15 @@ fn what_the_sink_raises_is_declared() {
 /// alias, the `logs` stream and no route (a push-only sink).
 #[test]
 fn the_statement_states_the_sink() {
-    assert_eq!(STATEMENT.name.len, NAME.len());
+    assert_eq!(STATEMENT.name.len(), NAME.len());
     assert_eq!(STATEMENT.max_inflight, 64);
-    assert_eq!(STATEMENT.rewrites_len, 1);
+    assert_eq!(STATEMENT.rewrites_len(), 1);
     assert_eq!(REWRITES[0].class, REWRITE_ALIAS);
-    assert_eq!(REWRITES[0].from.len, ALIAS.len());
+    assert_eq!(REWRITES[0].from.len(), ALIAS.len());
     assert_eq!(STREAMS, &[ExportStream::Logs as u8]);
-    assert_eq!(TAIL.streams_len, 1);
-    assert_eq!(TAIL.routes_len, 0);
-    assert!(TAIL.routes.is_null());
+    assert_eq!(TAIL.streams_len(), 1);
+    assert_eq!(TAIL.routes_len(), 0);
+    assert!(TAIL.routes_ptr().is_null());
     assert_eq!(TAIL.head.size as usize, size_of::<Tail>());
 }
 

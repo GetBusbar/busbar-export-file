@@ -28,7 +28,6 @@
 
 mod config;
 
-use std::mem::size_of;
 use std::sync::{PoisonError, RwLock};
 use std::task::Poll;
 
@@ -38,7 +37,7 @@ use busbar_contract::abi::export::{
 };
 use busbar_contract::abi::host::service::{DiskWritten, DISK_OPEN_FAILED};
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
-use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement, REWRITE_ALIAS};
+use busbar_contract::abi::mechanism::door::{Rewrite, Statement, REWRITE_ALIAS};
 use busbar_contract::abi::sdk::conn::{ConnFailure, DiskFailure};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
@@ -77,35 +76,23 @@ const OPEN_FAILED: &str = "BUSBAR-7074";
 const STREAMS: &[u8] = &[ExportStream::Logs as u8];
 
 /// The export kind's Statement tail: `logs`, and no route (a push-only sink).
-const TAIL: Tail = Tail {
-    head: KindTailHead {
-        size: size_of::<Tail>() as u32,
-        _reserved: 0,
-    },
-    streams: STREAMS.as_ptr(),
-    streams_len: STREAMS.len(),
-    routes: std::ptr::null(),
-    routes_len: 0,
-};
+const TAIL: Tail = Tail::EMPTY.with_streams(STREAMS);
 
 /// The module name an operator writes, as the alias the registry holds beside [`NAME`].
 const REWRITES: &[Rewrite] = &[Rewrite {
     class: REWRITE_ALIAS,
     _reserved: 0,
     from: abi_str(ALIAS),
-    to: AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    },
+    to: AbiStr::ABSENT,
 }];
 
 /// This plugin's Statement: its name, version, in-flight bound, alias and stream.
-const STATEMENT: Statement = Statement {
-    kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
-    rewrites: REWRITES.as_ptr(),
-    rewrites_len: REWRITES.len(),
-    extensions: EXTENSIONS,
-    ..statement(NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT)
+const STATEMENT: Statement = {
+    let mut s = statement(NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT)
+        .with_rewrites(REWRITES)
+        .with_kind_tail(&TAIL);
+    s.extensions = EXTENSIONS;
+    s
 };
 
 /// The settings, parsed as the configuration grammar parses them (empty is `{}`).
@@ -272,7 +259,7 @@ impl SafeSlot for Deliver {
             },
             |p| *p,
         );
-        let batch: &[u8] = input.field(|i| &i.batch).bytes();
+        let batch: &[u8] = input.batch().bytes();
         let ticket = instance.ticket();
         let host = h.host();
         let mut conn = host.map(|host| host.connector_from(ticket, at.issued));

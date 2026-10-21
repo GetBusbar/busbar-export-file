@@ -10,8 +10,15 @@
 //! a route-less `serve` answering 404); every step's crossings exactly at the script's pin, the two
 //! folds equal, and the suite's RED arms kept. `plugin-ci.yml` runs it under `--release`.
 
+/// This crate's own door, as the loader names a compiled-in one.
+#[allow(unused_unsafe)]
+fn loaded() -> busbar_plugin_loader::dispatch::LoadedDoor {
+    // SAFETY: `door` is this crate's own `plugin_door!` entry.
+    unsafe { busbar_plugin_loader::dispatch::LoadedDoor::from_raw(busbar_export_file::door) }
+}
+
 busbar_plugin_loader::conformance_suite! {
-    door: busbar_export_file::door,
+    loaded: loaded(),
     cdylib: "busbar_export_file_plugin",
     inputs: include_str!("conformance.json"),
 }
