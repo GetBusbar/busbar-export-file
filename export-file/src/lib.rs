@@ -201,11 +201,12 @@ impl FileSink {
     /// Raise what the host reported for one append, in the order it happened: each failed step of
     /// the rotation that ran before it, the rotation itself, then — when the batch did not land —
     /// the line that says it was dropped.
+    #[cfg(test)]
     pub fn settle(&self, answer: &Result<DiskWritten, DiskFailure>) {
         self.settle_at(&self.path().unwrap_or_default(), answer);
     }
 
-    /// [`FileSink::settle`] naming `path`: the file the append was issued against, which a reload
+    /// `FileSink::settle` naming `path`: the file the append was issued against, which a reload
     /// that landed while the append was pending may have replaced in the settings.
     pub fn settle_at(&self, path: &str, answer: &Result<DiskWritten, DiskFailure>) {
         let rotation = match answer {
@@ -272,7 +273,7 @@ type State = Held<FileSink>;
 
 /// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
 /// while the host appends; fire-and-forget, so READY whatever became of the line once the host
-/// answered ([`FileSink::settle`] raises what it reported).
+/// answered (`FileSink::settle` raises what it reported).
 struct Deliver;
 
 impl SafeSlot for Deliver {
