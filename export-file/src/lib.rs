@@ -26,7 +26,6 @@
 
 pub mod config;
 
-use std::mem::size_of;
 use std::sync::{PoisonError, RwLock};
 use std::task::Poll;
 
@@ -39,7 +38,7 @@ use busbar_contract::abi::host::service::{
     DISK_SHIFT_FAILED,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
-use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement, REWRITE_ALIAS};
+use busbar_contract::abi::mechanism::door::{Rewrite, Statement, REWRITE_ALIAS};
 use busbar_contract::abi::sdk::conn::{ConnFailure, DiskFailure, Host};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
@@ -83,35 +82,20 @@ pub const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
 const STREAMS: &[u8] = &[ExportStream::Logs as u8];
 
 /// The export kind's Statement tail: `logs`, and no route (a push-only sink).
-const TAIL: Tail = Tail {
-    head: KindTailHead {
-        size: size_of::<Tail>() as u32,
-        _reserved: 0,
-    },
-    streams: STREAMS.as_ptr(),
-    streams_len: STREAMS.len(),
-    routes: std::ptr::null(),
-    routes_len: 0,
-};
+const TAIL: Tail = Tail::EMPTY.with_streams(STREAMS);
 
 /// The module name an operator writes, as the alias the registry holds beside [`NAME`].
 const REWRITES: &[Rewrite] = &[Rewrite {
     class: REWRITE_ALIAS,
     _reserved: 0,
     from: abi_str(ALIAS),
-    to: AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    },
+    to: AbiStr::ABSENT,
 }];
 
 /// This plugin's Statement: its name, version, in-flight bound, alias and stream.
-pub const STATEMENT: Statement = Statement {
-    kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
-    rewrites: REWRITES.as_ptr(),
-    rewrites_len: REWRITES.len(),
-    ..statement(NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT)
-};
+pub const STATEMENT: Statement = statement(NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT)
+    .with_rewrites(REWRITES)
+    .with_kind_tail(&TAIL);
 
 /// The settings, parsed as the configuration grammar parses them (empty is `{}`).
 fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
@@ -289,7 +273,7 @@ impl SafeSlot for Deliver {
             .resume::<String>()
             .map(|p| *p)
             .unwrap_or_else(|| h.life().path().unwrap_or_default());
-        let batch: &[u8] = input.field(|i| &i.batch).bytes();
+        let batch: &[u8] = input.batch().bytes();
         match h.life().append(h.host(), instance.ticket(), batch) {
             Poll::Pending => {
                 instance.park(issued_at);

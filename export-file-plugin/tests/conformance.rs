@@ -11,7 +11,7 @@
 //! folds equal, and the suite's RED arms kept. `plugin-ci.yml` runs it under `--release`.
 
 busbar_plugin_loader::conformance_suite! {
-    door: busbar_export_file::door,
+    door: busbar_export_file::MACRO_DOOR,
     cdylib: "busbar_export_file_plugin",
     inputs: include_str!("conformance.json"),
 }
