@@ -155,6 +155,25 @@ fn a_delivery_hands_the_host_one_line_per_append() {
     assert_eq!(at.line, 3);
 }
 
+/// EVERY WRITTEN LINE ENDS IN `\n`, AS 1.5.5's `writeln!` WROTE IT, the final line of a batch with no
+/// trailing newline included. RED before: that last line went to the host without its newline, so
+/// the next append ran onto it.
+#[test]
+fn the_final_line_without_a_newline_is_written_with_one() {
+    let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 2}));
+    let landed = |_| Poll::Ready(Ok(report(0, 0, 1)));
+    let (polled, lines) = handed(
+        &s,
+        b"{\"a\":1}\n{\"b\":2}",
+        &mut fresh("/var/log/x.jsonl"),
+        landed,
+    );
+    assert_eq!(polled, Poll::Ready(()));
+    assert_eq!(lines, [&b"{\"a\":1}\n"[..], b"{\"b\":2}\n"]);
+    let (_, lines) = handed(&s, b"{\"only\":1}", &mut fresh("/var/log/x.jsonl"), landed);
+    assert_eq!(lines, [&b"{\"only\":1}\n"[..]]);
+}
+
 /// A FAILED APPEND DROPS ITS OWN LINE, AS 1.5.5'S DID (one open and one write per line, one warning
 /// per dropped line): the line the host could not append is raised once, and the lines after it
 /// still go to the host and land. RED before: the whole batch was one append, so one failure

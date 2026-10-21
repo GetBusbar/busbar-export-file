@@ -162,7 +162,7 @@ impl FileSink {
             return Poll::Ready(());
         }
         for line in lines(batch).skip(at.line) {
-            match append(line) {
+            match append(&line) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(answer) => self.settle_at(&at.path, &answer),
             }
@@ -199,11 +199,21 @@ impl FileSink {
     }
 }
 
-/// The JSON lines of `batch`, each with its newline (the last one as it ends).
-fn lines(batch: &[u8]) -> impl Iterator<Item = &[u8]> {
+/// The JSON lines of `batch`, each ending in `\n` as 1.5.5's `writeln!` wrote it, the final line
+/// included when the batch does not end in one.
+fn lines(batch: &[u8]) -> impl Iterator<Item = std::borrow::Cow<'_, [u8]>> {
     batch
         .split_inclusive(|b| *b == b'\n')
         .filter(|line| !line.is_empty())
+        .map(|line| {
+            if line.ends_with(b"\n") {
+                std::borrow::Cow::Borrowed(line)
+            } else {
+                let mut owned = line.to_vec();
+                owned.push(b'\n');
+                std::borrow::Cow::Owned(owned)
+            }
+        })
 }
 
 /// Where a delivery stands, parked while the host appends one of its lines: the path the delivery
