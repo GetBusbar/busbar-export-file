@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 pub struct FileSettings {
     /// The JSONL file path each request-log line is appended to — REQUIRED.
     pub path: String,
-    /// Optional size (MiB) at which the file is rotated (best-effort; absent ⇒ never rotate).
+    /// Optional size (MiB) at which the host truncates the file in place before the next line
+    /// (1.5.5's rollover, no archive kept; absent ⇒ never).
     #[serde(default)]
     pub rotate_mb: Option<u64>,
 }
