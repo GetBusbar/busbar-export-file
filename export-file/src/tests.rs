@@ -265,3 +265,27 @@ fn the_statement_states_the_sink() {
     assert!(TAIL.routes.is_null());
     assert_eq!(TAIL.head.size as usize, size_of::<Tail>());
 }
+
+/// THE LINES NAME THE FILE THE APPEND WAS ISSUED AGAINST (A2 r1 F1): a reload that replaced the
+/// path while the append was pending must not point the operator at the new file.
+/// RED before the fix: `settle_at` read the settings' path when the answer arrived.
+#[test]
+fn a_settled_append_names_the_path_it_was_issued_against() {
+    let s = sink(serde_json::json!({"path": "/old.jsonl"}));
+    s.refresh(br#"{"path":"/new.jsonl"}"#, &[], 2)
+        .expect("a refresh applies");
+    let events = logged(|| {
+        s.settle_at(
+            "/old.jsonl",
+            &failed(
+                busbar_contract::abi::host::service::DISK_APPEND_FAILED,
+                "No space left on device (os error 28)",
+            ),
+        )
+    });
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(field(&events[0], "path"), "/old.jsonl");
+    let events = logged(|| s.settle_at("/old.jsonl", &Ok(report(DISK_ROTATED, 0, 3))));
+    assert_eq!(field(&events[0], "path"), "/old.jsonl");
+    assert_eq!(field(&events[0], "archive"), "/old.jsonl.1");
+}

@@ -195,6 +195,13 @@ impl FileSink {
     /// the rotation that ran before it, the rotation itself, then — when the batch did not land —
     /// the line that says it was dropped.
     pub fn settle(&self, answer: &Result<DiskWritten, DiskFailure>) {
+        self.settle_at(&self.path().unwrap_or_default(), answer);
+    }
+
+    /// [`FileSink::settle`] naming `path`: the file the append was issued against, which a reload
+    /// that landed while the append was pending may have replaced in the settings.
+    pub fn settle_at(&self, path: &str, answer: &Result<DiskWritten, DiskFailure>) {
+        let _ = path;
         let path = self.path().unwrap_or_default();
         let rotation = match answer {
             Ok(w) => *w,
