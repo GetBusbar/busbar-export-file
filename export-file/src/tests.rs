@@ -72,6 +72,7 @@ impl tracing::Subscriber for Capture {
     fn event(&self, event: &tracing::Event<'_>) {
         let mut v = Fields(Vec::new());
         event.record(&mut v);
+        v.0.push(("level".to_string(), event.metadata().level().to_string()));
         self.0.lock().unwrap().push(v.0);
     }
     fn enter(&self, _: &tracing::span::Id) {}
@@ -147,6 +148,7 @@ fn a_dropped_batch_is_one_line_naming_the_step_the_host_failed() {
     });
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(field(&events[0], "diag"), OPEN_FAILED);
+    assert_eq!(field(&events[0], "level"), "WARN");
     assert_eq!(field(&events[0], "path"), "/var/log/x.jsonl");
     assert_eq!(
         field(&events[0], "error"),
@@ -164,6 +166,7 @@ fn a_dropped_batch_is_one_line_naming_the_step_the_host_failed() {
     });
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(field(&events[0], "diag"), APPEND_FAILED);
+    assert_eq!(field(&events[0], "level"), "WARN");
     assert_eq!(
         field(&events[0], "message"),
         "request-log file append failed; this log was dropped"
@@ -195,6 +198,7 @@ fn a_rotation_is_raised_step_by_step() {
     let events = logged(|| s.settle(&Ok(report(DISK_ROTATED, 0, 3))));
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(field(&events[0], "archive"), "/var/log/x.jsonl.1");
+    assert_eq!(field(&events[0], "level"), "INFO");
     assert_eq!(
         field(&events[0], "message"),
         "request-log file rotated by rename"
@@ -206,6 +210,74 @@ fn a_rotation_is_raised_step_by_step() {
         codes,
         [RETENTION_FAILED, SHIFT_FAILED, ROTATE_RENAME_FAILED]
     );
+    assert!(events.iter().all(|e| field(e, "level") == "WARN"));
+    // C8: each line names what it is about.
+    assert_eq!(ROTATE_ARCHIVE_LIMIT, 9);
+    assert_eq!(
+        field(&events[0], "archive"),
+        format!("/var/log/x.jsonl.{ROTATE_ARCHIVE_LIMIT}")
+    );
+    assert_eq!(field(&events[1], "path"), "/var/log/x.jsonl");
+    assert_eq!(field(&events[2], "path"), "/var/log/x.jsonl");
+}
+
+/// C5: each rotation fault bit alone raises exactly its own code, and nothing else.
+#[test]
+fn each_rotation_fault_bit_raises_exactly_its_own_code() {
+    let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 1}));
+    for (bit, code) in [
+        (DISK_RETENTION_FAILED, RETENTION_FAILED),
+        (DISK_SHIFT_FAILED, SHIFT_FAILED),
+        (DISK_RENAME_FAILED, ROTATE_RENAME_FAILED),
+    ] {
+        let events = logged(|| s.settle(&Ok(report(0, bit, 3))));
+        assert_eq!(events.len(), 1, "bit {bit}: {events:?}");
+        assert_eq!(field(&events[0], "diag"), code, "bit {bit}");
+        assert_eq!(field(&events[0], "level"), "WARN", "bit {bit}");
+    }
+    assert_eq!(RETENTION_FAILED, "BUSBAR-7075");
+    assert_eq!(SHIFT_FAILED, "BUSBAR-7076");
+    assert_eq!(ROTATE_RENAME_FAILED, "BUSBAR-7077");
+}
+
+/// C6: an append that failed still reports the rotation that ran before it: the rotation's lines
+/// come first, the dropped line last.
+#[test]
+fn a_failed_append_raises_its_rotation_before_the_dropped_line() {
+    let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 1}));
+    let answer = Err(DiskFailure {
+        step: busbar_contract::abi::host::service::DISK_APPEND_FAILED,
+        rotation: report(DISK_ROTATED, DISK_SHIFT_FAILED, 0),
+        why: ConnFailure::Failed("No space left on device (os error 28)".to_string()),
+    });
+    let events = logged(|| s.settle(&answer));
+    let codes: Vec<Option<String>> = events
+        .iter()
+        .map(|e| e.iter().find(|(n, _)| n == "diag").map(|(_, v)| v.clone()))
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            Some(SHIFT_FAILED.to_string()),
+            None,
+            Some(APPEND_FAILED.to_string())
+        ],
+        "{events:?}"
+    );
+    assert_eq!(field(&events[1], "archive"), "/var/log/x.jsonl.1");
+    assert_eq!(field(&events[1], "level"), "INFO");
+    assert_eq!(
+        field(&events[2], "message"),
+        "request-log file append failed; this log was dropped"
+    );
+    assert_eq!(field(&events[2], "level"), "WARN");
+}
+
+/// C7: the frozen 1.5.x literals.
+#[test]
+fn the_frozen_names_are_pinned() {
+    assert_eq!(ALIAS, "request-log-file");
+    assert_eq!(NAME, "busbar-export-file");
 }
 
 /// A reload's settings replace the instance's; a reload whose settings do not parse is refused and
@@ -297,4 +369,151 @@ fn a_settled_append_names_the_path_it_was_issued_against() {
     let events = logged(|| s.settle_at("/old.jsonl", &Ok(report(DISK_ROTATED, 0, 3))));
     assert_eq!(field(&events[0], "path"), "/old.jsonl");
     assert_eq!(field(&events[0], "archive"), "/old.jsonl.1");
+}
+
+// ── THE DELIVER OP, THROUGH THE DOOR (C4) ───────────────────────────────────────────────────────
+
+use busbar_contract::abi::host::service::{DiskAppendIn, DISK_APPEND_FAILED};
+use busbar_contract::abi::mechanism::call::{BLOB_JSON, FLAG_RESUME};
+use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, RefreshIn};
+use busbar_contract::abi::sdk::test_support::fake::{self, FakeHost, FakeService, ServiceCall};
+use busbar_contract::abi::sdk::test_support::reply;
+use busbar_contract::abi::sdk::test_support::test_in::TestIn;
+use busbar_contract::abi::sdk::test_support::{zeroed, DoorView};
+use std::cell::RefCell;
+
+thread_local! {
+    /// Every `disk.append` the fake host received on this thread: (destination key, bytes).
+    static APPENDS: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
+    /// What the fake host answers the NEXT append with.
+    static NEXT: RefCell<Next> = const { RefCell::new(Next::Land) };
+}
+
+#[derive(Clone, Copy)]
+enum Next {
+    Land,
+    Pend,
+    Fail,
+}
+
+/// The host's `disk.append`, recording what it was asked and answering as `NEXT` says.
+struct Disk;
+
+impl FakeService for Disk {
+    type In = DiskAppendIn;
+    fn serve(call: &mut ServiceCall<DiskAppendIn>) -> Outcome {
+        let key = call.text(|i| &i.dest_key).to_string();
+        let bytes = call.blob(|i| &i.bytes).to_vec();
+        let len = bytes.len() as u64;
+        APPENDS.with(|a| a.borrow_mut().push((key, bytes)));
+        match NEXT.with(|n| *n.borrow()) {
+            Next::Pend => Outcome::Pending,
+            Next::Land => {
+                call.put(|i| &i.result, report(0, 0, len));
+                Outcome::Ready
+            }
+            Next::Fail => {
+                call.put(|i| &i.result, report(0, 0, 0));
+                call.set_value(DISK_APPEND_FAILED)
+                    .set_error("No space left on device (os error 28)");
+                Outcome::Failed
+            }
+        }
+    }
+}
+
+fn appends() -> Vec<(String, Vec<u8>)> {
+    APPENDS.with(|a| a.borrow().clone())
+}
+
+fn next(n: Next) {
+    NEXT.with(|c| *c.borrow_mut() = n);
+}
+
+const BATCH: &[u8] = b"{\"a\":1}\n{\"b\":2}\n";
+
+/// Drive the deliver op through the door over a fake host serving `disk.append`: the host receives
+/// the batch unchanged under the key `path` (C4 i); and an append that pends, then a reload to a new
+/// path, then a resumed delivery the host fails, runs to READY with the append re-issued (C4 ii, as
+/// far as the harness can observe it: see below).
+/// RED before: `Deliver` passed another destination key, or altered the batch.
+#[test]
+fn the_deliver_op_appends_the_batch_under_the_path_key_through_the_door() {
+    APPENDS.with(|a| a.borrow_mut().clear());
+    let host = FakeHost::new().serve(fake::host::DISK_APPEND, Disk);
+    let view = DoorView::of(MACRO_DOOR);
+    let ops = |pick: fn(
+        &'static export::Ops,
+    ) -> &'static Option<busbar_contract::abi::mechanism::call::Op>| {
+        view.op::<export::Ops>(pick).expect("the slot is stated")
+    };
+    let open = ops(|t| &t.head.open);
+    let refresh = ops(|t| &t.head.refresh);
+    let deliver = ops(|t| &t.deliver);
+    let close = ops(|t| &t.head.close);
+
+    let mut opened = {
+        let lent = host.lend_in(
+            TestIn::<OpenIn>::new()
+                .set(|i| &i.head.op, slot::OPEN)
+                .settings(br#"{"path":"/old.jsonl"}"#),
+        );
+        reply::call_hosted_in(open, None, &lent, zeroed::<OpenOut>())
+    };
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let instance = opened.take_instance().expect("open answered an instance");
+
+    let deliver_in = |flags: u32| {
+        TestIn::<DeliverIn>::new()
+            .set(|i| &i.head.op, export::slot::DELIVER)
+            .set(|i| &i.head.flags, flags)
+            .set(|i| &i.head.ticket, TICKET)
+            .blob(|i| &i.batch, BATCH, BLOB_JSON)
+    };
+    let out = || {
+        let mut h: OutHead = zeroed();
+        h.size = size_of::<OutHead>() as u32;
+        h
+    };
+
+    // (i) a landed append: the key is `path`, the bytes are the batch, unchanged.
+    next(Next::Land);
+    let c = reply::call_in(deliver, Some(&instance), &deliver_in(0), out());
+    assert_eq!(c.outcome, Outcome::Ready);
+    assert_eq!(appends(), [("path".to_string(), BATCH.to_vec())]);
+
+    // (ii) an append that pends, a reload to a new path, the resumed delivery failing.
+    next(Next::Pend);
+    let c = reply::call_in(deliver, Some(&instance), &deliver_in(0), out());
+    assert_eq!(c.outcome, Outcome::Pending);
+    let c = reply::call_in(
+        refresh,
+        Some(&instance),
+        &TestIn::<RefreshIn>::new()
+            .set(|i| &i.head.op, slot::REFRESH)
+            .settings(br#"{"path":"/new.jsonl"}"#),
+        out(),
+    );
+    assert_eq!(c.outcome, Outcome::Ready);
+    next(Next::Fail);
+    // The resumed delivery re-issues the parked append and the host fails it: the op is still
+    // fire-and-forget (READY). The line it raises is folded into the reply's envelope under the
+    // door's call capture, which `reply::call_in` clears before returning (`reply.rs`
+    // `clear_head`, l.403-413): the harness exposes no way to read it, so the path named by that
+    // line is pinned by `a_settled_append_names_the_path_it_was_issued_against` alone.
+    let c = reply::call_in(deliver, Some(&instance), &deliver_in(FLAG_RESUME), out());
+    assert_eq!(c.outcome, Outcome::Ready);
+    assert!(appends()
+        .iter()
+        .all(|(k, b)| k == DESTINATION && b == BATCH));
+    assert_eq!(appends().len(), 3);
+
+    let closed = reply::close_in(
+        close,
+        instance,
+        &TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
+        out(),
+    );
+    assert_eq!(closed.outcome, Outcome::Ready);
+    drop(host);
 }
