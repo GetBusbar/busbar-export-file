@@ -9,7 +9,8 @@ use super::*;
 use std::sync::{Arc, Mutex};
 
 fn sink(settings: serde_json::Value) -> FileSink {
-    FileSink::open(settings.to_string().as_bytes(), &[], 1).expect("the sink never refuses to open")
+    FileSink::open(settings.to_string().as_bytes(), &[], 1)
+        .expect("the sink opens on settings that parse")
 }
 
 fn refused(settings: &str) -> String {
@@ -117,14 +118,15 @@ fn failed(step: u64, why: &str) -> Result<DiskWritten, DiskFailure> {
     })
 }
 
-/// A batch lands through the host's disk lane: an instance whose settings did not parse, or an
-/// empty batch, asks the host nothing; one with no host tables answers that it was handed none.
+/// A batch lands through the host's disk lane: an empty batch asks the host nothing; one with no
+/// host tables answers that it was handed none. Settings that do not parse never open an instance.
 #[test]
 fn a_delivery_asks_the_host_only_with_a_path_and_a_batch() {
     let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 2}));
     assert_eq!(s.append(None, TICKET, b""), Poll::Ready(None));
-    let unparsed = sink(serde_json::json!({"rotate_mb": 2}));
-    assert_eq!(unparsed.append(None, TICKET, b"{}\n"), Poll::Ready(None));
+    let r = FileSink::open(br#"{"rotate_mb":2}"#, &[], 1).expect_err("unparsed settings refuse");
+    assert_eq!(r.outcome(), Outcome::Failed);
+    assert_eq!(r.text().unwrap(), "settings: missing field `path`");
     match s.append(None, TICKET, b"{}\n") {
         Poll::Ready(Some(Err(f))) => assert_eq!(f.why, ConnFailure::Unarmed),
         other => panic!("{other:?}"),
@@ -206,14 +208,17 @@ fn a_rotation_is_raised_step_by_step() {
     );
 }
 
-/// A reload's settings replace the instance's: unparsed settings stop the deliveries, good ones
-/// resume them at the new path.
+/// A reload's settings replace the instance's; a reload whose settings do not parse is refused and
+/// the old settings stay, so deliveries continue at the old path.
 #[test]
-fn a_refresh_replaces_the_settings() {
+fn a_refused_refresh_keeps_the_settings() {
     let s = sink(serde_json::json!({"path": "/a"}));
-    s.refresh(b"{}", &[], 2).expect("a refresh applies");
-    assert_eq!(s.path(), None);
-    assert_eq!(s.append(None, TICKET, b"{}\n"), Poll::Ready(None));
+    let r = s
+        .refresh(b"{}", &[], 2)
+        .expect_err("unparsed settings refuse");
+    assert_eq!(r.outcome(), Outcome::Failed);
+    assert_eq!(r.text().unwrap(), "settings: missing field `path`");
+    assert_eq!(s.path().as_deref(), Some("/a"));
     s.refresh(br#"{"path":"/b"}"#, &[], 3)
         .expect("a refresh applies");
     assert_eq!(s.path().as_deref(), Some("/b"));
