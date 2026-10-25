@@ -517,3 +517,54 @@ fn the_deliver_op_appends_the_batch_under_the_path_key_through_the_door() {
     assert_eq!(closed.outcome, Outcome::Ready);
     drop(host);
 }
+
+// ── EVERY REFUSAL NAMES ITS CAUSE (sibling review, export kind) ─────────────────────────────────
+
+/// RED before: `serve` answered READY `404` for a sink that declares no route, a silent "nothing".
+/// It is now REFUSED, saying why, in the words every export sibling uses (`scrape`: the plugin
+/// crate's `tests/refusals.rs`).
+#[test]
+fn every_refusal_names_its_cause_through_the_door() {
+    use busbar_contract::abi::export::{Ops, ServeIn, ServeOut};
+    let view = DoorView::of(MACRO_DOOR);
+    let open = view.op::<Ops>(|t| &t.head.open).expect("open");
+    let close = view.op::<Ops>(|t| &t.head.close).expect("close");
+    let serve = view.op::<Ops>(|t| &t.serve).expect("serve");
+    let out = || {
+        let mut h: OutHead = zeroed();
+        h.size = size_of::<OutHead>() as u32;
+        h
+    };
+
+    // `deliver` with no instance answers NO_INSTANCE; neither the host nor the test kit enters a
+    // kind op on no instance (`reply::call_in` asserts it), so that arm is not driven.
+    let mut opened = reply::call_in(
+        open,
+        None,
+        &TestIn::<OpenIn>::new()
+            .set(|i| &i.head.op, slot::OPEN)
+            .settings(br#"{"path":"/x.jsonl"}"#),
+        zeroed::<OpenOut>(),
+    );
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let instance = opened.take_instance().expect("an instance");
+
+    // `scrape` is driven over the loader (`tests/refusals.rs`): the test kit copies no `ScrapeOut`.
+
+    let c = reply::call_in(
+        serve,
+        Some(&instance),
+        &TestIn::<ServeIn>::new().set(|i| &i.head.op, export::slot::SERVE),
+        zeroed::<ServeOut>(),
+    );
+    assert_eq!(c.outcome, Outcome::Refused);
+    assert_eq!(c.error.as_deref(), Some(NO_ROUTE));
+
+    let closed = reply::close_in(
+        close,
+        instance,
+        &TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
+        out(),
+    );
+    assert_eq!(closed.outcome, Outcome::Ready);
+}
