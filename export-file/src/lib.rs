@@ -14,7 +14,9 @@
 //! operator's configured path, and every append and every rotation is a host act on the host's
 //! bounded disk lane (THE DESIGN §11.11 R4, the `disk.append` service of §11.12): a delivery hands
 //! the batch, unchanged, to `disk.append` under the key `path`, and the host appends it whole —
-//! rotating the file by rename first when it already holds `rotate_mb` MiB. What the host reports
+//! rotating the file first when it already holds `rotate_mb` MiB. This manifest declares no `keep`
+//! for `path`, so the host rotates it as 1.5.5 did: truncated in place, its older lines dropped, no
+//! archive kept (`DISK_ROTATE_UNDECLARED`). What the host reports
 //! back is raised in the words the sink always raised: an append the host could not make drops the
 //! batch with the open-failed ([`OPEN_FAILED`]) or append-failed ([`APPEND_FAILED`]) line, and each
 //! failed step of a rotation with its own declared code.
@@ -56,9 +58,10 @@ pub const ALIAS: &str = "request-log-file";
 /// five catalogue codes and its one destination. The packer embeds it (`--declares-file`).
 pub const DECLARES: &str = include_str!("../declares.json");
 
-/// How many rotated archives ONE sink keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) before the
-/// oldest is dropped to make room for a new rotation: the retention the host's disk lane applies to
-/// this sink's destination, the host's own constant. A RETENTION policy, not a truncation one.
+/// How many rotated archives the host keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) when it
+/// rotates a destination by rename: the host's own constant, named in the retention-failed line. This
+/// sink declares no `keep`, so its file is truncated in place (1.5.5) and no archive is kept; the
+/// rename-only lines are raised only if the host reports a rename rotation.
 pub const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
 
 /// The most appends one instance holds in flight (1.5.5's `MAX_INFLIGHT_FILE_APPENDS`); past it the
@@ -124,8 +127,8 @@ fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
 /// One opened instance.
 #[derive(Debug)]
 pub struct FileSink {
-    /// The instance's settings; `None` when they do not parse (validation already refused them, so
-    /// an instance that got this far is never configured that way — it simply writes nothing).
+    /// The instance's settings. Always `Some` once opened: `open` and `refresh` refuse settings that
+    /// do not parse, so an instance never holds unparsed ones.
     settings: RwLock<Option<FileSettings>>,
 }
 
@@ -137,26 +140,27 @@ impl Life for FileSink {
         parse(settings).map(|_| ())
     }
 
-    /// Never refuses: the settings were validated with the configuration, and an instance whose
-    /// settings do not parse writes nothing.
+    /// Refuses settings that do not parse, in the same words as [`Life::validate`].
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-        Ok(Self {
-            settings: RwLock::new(parse(settings).ok()),
+        parse(settings).map(|s| Self {
+            settings: RwLock::new(Some(s)),
         })
     }
 
-    /// A reload's settings replace the instance's.
+    /// A reload's settings replace the instance's; settings that do not parse are refused and the
+    /// old ones stay.
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        let parsed = parse(settings)?;
         *self
             .settings
             .write()
-            .unwrap_or_else(PoisonError::into_inner) = parse(settings).ok();
+            .unwrap_or_else(PoisonError::into_inner) = Some(parsed);
         Ok(Refreshed::default())
     }
 }
 
 impl FileSink {
-    /// The configured path; `None` when the settings did not parse (the instance writes nothing).
+    /// The configured path; `None` only if no settings are held, which an opened instance never is.
     pub fn path(&self) -> Option<String> {
         self.settings
             .read()
@@ -166,8 +170,8 @@ impl FileSink {
     }
 
     /// Have the host append `batch` (JSON lines, unchanged) to the destination on `host`'s disk
-    /// lane, under the op running on `ticket`: what [`Connector::disk_append`] answered. An instance
-    /// whose settings did not parse, or an empty batch, appends nothing and answers at once.
+    /// lane, under the op running on `ticket`: what [`Connector::disk_append`] answered. An empty
+    /// batch appends nothing and answers at once.
     ///
     /// [`Connector::disk_append`]: busbar_contract::abi::sdk::conn::Connector::disk_append
     pub fn append(
@@ -176,6 +180,7 @@ impl FileSink {
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         batch: &[u8],
     ) -> Poll<Option<Result<DiskWritten, DiskFailure>>> {
+        // `path().is_none()` is unreachable: open/refresh refuse settings that do not parse.
         if batch.is_empty() || self.path().is_none() {
             return Poll::Ready(None);
         }

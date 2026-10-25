@@ -5,7 +5,7 @@ version = "1.6.0"
 publish = false            # a first-party plugin crate; shipped linked into busbar or as a signed tarball
 edition = "2021"
 rust-version = "1.97"
-description = "The request-log FILE export sink (`module: request-log-file`): appends each request-log line as JSONL, rotating by rename at `rotate_mb`. Every file act is performed by the host on the destination it opened for the operator's configured path; the sink never opens a path."
+description = "The request-log FILE export sink (`module: request-log-file`): appends each request-log line as JSONL, truncating it in place at `rotate_mb` as 1.5.5 did. Every file act is performed by the host on the destination it opened for the operator's configured path; the sink never opens a path."
 license = "Apache-2.0"
 
 [lib]
@@ -28,3 +28,7 @@ serde_json = { workspace = true }
 # The sink's operator log lines, emitted with the catalogue's `diag` banner field exactly as they
 # always were; the door's call capture carries them to the instance's plugin log (THE DESIGN §11.2).
 tracing = { workspace = true }
+
+[dev-dependencies]
+# The contract's plugin test harness (fake host, door view, reply copies): dev-only, so no shipped image carries it.
+busbar-contract = { workspace = true, features = ["test-seal"] }
