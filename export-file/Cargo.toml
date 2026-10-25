@@ -28,3 +28,7 @@ serde_json = { workspace = true }
 # The sink's operator log lines, emitted with the catalogue's `diag` banner field exactly as they
 # always were; the door's call capture carries them to the instance's plugin log (THE DESIGN §11.2).
 tracing = { workspace = true }
+
+[dev-dependencies]
+# The contract's plugin test harness (fake host, door view, reply copies): dev-only, so no shipped image carries it.
+busbar-contract = { workspace = true, features = ["test-seal"] }
