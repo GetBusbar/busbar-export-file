@@ -14,7 +14,9 @@
 //! operator's configured path, and every append and every rotation is a host act on the host's
 //! bounded disk lane (THE DESIGN §11.11 R4, the `disk.append` service of §11.12): a delivery hands
 //! the batch, unchanged, to `disk.append` under the key `path`, and the host appends it whole —
-//! rotating the file by rename first when it already holds `rotate_mb` MiB. What the host reports
+//! rotating the file first when it already holds `rotate_mb` MiB. This manifest declares no `keep`
+//! for `path`, so the host rotates it as 1.5.5 did: truncated in place, its older lines dropped, no
+//! archive kept (`DISK_ROTATE_UNDECLARED`). What the host reports
 //! back is raised in the words the sink always raised: an append the host could not make drops the
 //! batch with the open-failed ([`OPEN_FAILED`]) or append-failed ([`APPEND_FAILED`]) line, and each
 //! failed step of a rotation with its own declared code.
@@ -56,9 +58,10 @@ pub const ALIAS: &str = "request-log-file";
 /// five catalogue codes and its one destination. The packer embeds it (`--declares-file`).
 pub const DECLARES: &str = include_str!("../declares.json");
 
-/// How many rotated archives ONE sink keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) before the
-/// oldest is dropped to make room for a new rotation: the retention the host's disk lane applies to
-/// this sink's destination, the host's own constant. A RETENTION policy, not a truncation one.
+/// How many rotated archives the host keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) when it
+/// rotates a destination by rename: the host's own constant, named in the retention-failed line. This
+/// sink declares no `keep`, so its file is truncated in place (1.5.5) and no archive is kept; the
+/// rename-only lines are raised only if the host reports a rename rotation.
 pub const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
 
 /// The most appends one instance holds in flight (1.5.5's `MAX_INFLIGHT_FILE_APPENDS`); past it the
