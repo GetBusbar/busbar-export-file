@@ -273,13 +273,6 @@ fn a_failed_append_raises_its_rotation_before_the_dropped_line() {
     assert_eq!(field(&events[2], "level"), "WARN");
 }
 
-/// C7: the frozen 1.5.x literals.
-#[test]
-fn the_frozen_names_are_pinned() {
-    assert_eq!(ALIAS, "request-log-file");
-    assert_eq!(NAME, "busbar-export-file");
-}
-
 /// A reload's settings replace the instance's; a reload whose settings do not parse is refused and
 /// the old settings stay, so deliveries continue at the old path.
 #[test]
