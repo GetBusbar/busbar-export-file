@@ -268,6 +268,14 @@ const fn no_rotation() -> DiskWritten {
 /// The instance state every slot reads.
 type State = Held<FileSink>;
 
+/// The error texts of the door's REFUSED answers: one per cause, so the host's line names why
+/// instead of a bare outcome.
+pub const NO_INSTANCE: &str = "no opened request-log-file instance";
+/// `scrape` on a push sink: it carries no `metrics` stream.
+pub const NO_EXPOSITION: &str = "this sink carries no metrics stream, so it renders no exposition";
+/// `serve` on a sink that declares no route.
+pub const NO_ROUTE: &str = "this sink declares no route, so it serves no request";
+
 /// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
 /// while the host appends; fire-and-forget, so READY whatever became of the line once the host
 /// answered ([`FileSink::settle`] raises what it reported).
@@ -280,10 +288,10 @@ impl SafeSlot for Deliver {
     fn call(
         instance: Instance<'_, State>,
         input: Lent<'_, DeliverIn>,
-        _: Out<'_, OutHead>,
+        mut out: Out<'_, OutHead>,
     ) -> Outcome {
         let Some(h) = instance.get() else {
-            return Outcome::Refused;
+            return out.fail(Refusal::refused(NO_INSTANCE));
         };
         // A resumed delivery re-issues the append it parked (the host answers its stored result);
         // a fresh one appends the batch it was lent.
@@ -309,15 +317,16 @@ impl SafeSlot for Deliver {
     }
 }
 
-/// `scrape`: a push sink renders no exposition.
+/// `scrape`: REFUSED, saying why — a push sink carries no `metrics` stream and renders no
+/// exposition (the host scrapes only the sink that carries `metrics`).
 pub struct Scrape;
 
 impl SafeSlot for Scrape {
     type In = ScrapeIn;
     type Out = ScrapeOut;
     type State = State;
-    fn call(_: Instance<'_, State>, _: Lent<'_, ScrapeIn>, _: Out<'_, ScrapeOut>) -> Outcome {
-        Outcome::Ready
+    fn call(_: Instance<'_, State>, _: Lent<'_, ScrapeIn>, mut out: Out<'_, ScrapeOut>) -> Outcome {
+        out.fail(Refusal::refused(NO_EXPOSITION))
     }
 }
 
@@ -345,7 +354,8 @@ impl SafeSlot for Check {
     }
 }
 
-/// `serve`: no route, so any request is `404`.
+/// `serve`: REFUSED, saying why — the sink declares no route (the host serves only declared
+/// routes).
 pub struct Serve;
 
 impl SafeSlot for Serve {
@@ -353,8 +363,7 @@ impl SafeSlot for Serve {
     type Out = ServeOut;
     type State = State;
     fn call(_: Instance<'_, State>, _: Lent<'_, ServeIn>, mut out: Out<'_, ServeOut>) -> Outcome {
-        out.set(|o| &o.status_code, 404_u16);
-        Outcome::Ready
+        out.fail(Refusal::refused(NO_ROUTE))
     }
 }
 

@@ -6,8 +6,8 @@
 //! (`.busbar-ref`), drives the request-log FILE sink two ways through the one loader: LINKED (the
 //! logic crate's `door`) and DROPPED IN (this crate's built cdylib), over the export kind's script
 //! with the inputs in `conformance.json` (refused settings in the grammar's words, a delivery the
-//! host observes dropped under the open-failed code, a push sink's empty scrape, status and check,
-//! a route-less `serve` answering 404); every step's crossings exactly at the script's pin, the two
+//! host observes dropped under the open-failed code, status and check, a route-less `serve`
+//! REFUSED); every step's crossings exactly at the script's pin, the two
 //! folds equal, and the suite's RED arms kept. `plugin-ci.yml` runs it under `--release`.
 
 busbar_plugin_loader::conformance_suite! {
