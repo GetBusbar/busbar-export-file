@@ -27,7 +27,28 @@ fn settings_are_validated_in_the_configurations_words() {
     assert_eq!(refused(""), "settings: missing field `path`");
     assert_eq!(
         refused(r#"{"path":"/x","rotate":1}"#),
-        "settings: unknown field `rotate`, expected `path` or `rotate_mb`"
+        "settings: unknown field `rotate`, expected one of `path`, `rotate_mb`, `keep`"
+    );
+}
+
+/// KEEP N, DEFAULT 9 (owner signed 2026-10-27): the sink declares `keep: 9` for its destination, so
+/// the host rotates by rename keeping nine archives; an operator's `keep` (0 = truncate in place,
+/// as 1.5.5) is accepted up to the host's bound and refused past it.
+#[test]
+fn the_sink_keeps_nine_archives_unless_the_operator_says_otherwise() {
+    let d: serde_json::Value = serde_json::from_str(DECLARES).unwrap();
+    assert_eq!(d["keep"], serde_json::json!({ "path": 9 }));
+    for keep in [0, 1, 9, MAX_KEEP] {
+        let s = format!(r#"{{"path":"/x","rotate_mb":1,"keep":{keep}}}"#);
+        assert!(FileSink::validate(s.as_bytes()).is_ok(), "keep {keep}");
+    }
+    assert_eq!(
+        refused(r#"{"path":"/x","keep":65}"#),
+        "settings: `keep` is at most 64 archives"
+    );
+    assert_eq!(
+        refused(r#"{"path":"/x","keep":-1}"#),
+        "settings: invalid value: integer `-1`, expected u32"
     );
 }
 

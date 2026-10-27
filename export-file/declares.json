@@ -55,5 +55,8 @@
   ],
   "destinations": [
     "path"
-  ]
+  ],
+  "keep": {
+    "path": 9
+  }
 }
