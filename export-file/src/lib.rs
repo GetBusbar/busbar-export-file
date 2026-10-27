@@ -14,9 +14,10 @@
 //! operator's configured path, and every append and every rotation is a host act on the host's
 //! bounded disk lane (THE DESIGN §11.11 R4, the `disk.append` service of §11.12): a delivery hands
 //! the batch, unchanged, to `disk.append` under the key `path`, and the host appends it whole —
-//! rotating the file first when it already holds `rotate_mb` MiB. This manifest declares no `keep`
-//! for `path`, so the host rotates it as 1.5.5 did: truncated in place, its older lines dropped, no
-//! archive kept (`DISK_ROTATE_UNDECLARED`). What the host reports
+//! rotating the file first when it already holds `rotate_mb` MiB. This manifest declares `keep: 9`
+//! for `path`, so the host rotates it BY RENAME, keeping `<path>.1` .. `<path>.9` and dropping only
+//! the oldest (owner signed 2026-10-27, "Keep N, default 9"); an operator's `keep` setting sets N,
+//! and `keep: 0` truncates in place as 1.5.5 did. What the host reports
 //! back is raised in the words the sink always raised: an append the host could not make drops the
 //! batch with the open-failed ([`OPEN_FAILED`]) or append-failed ([`APPEND_FAILED`]) line, and each
 //! failed step of a rotation with its own declared code.
@@ -59,9 +60,8 @@ pub const ALIAS: &str = "request-log-file";
 pub const DECLARES: &str = include_str!("../declares.json");
 
 /// How many rotated archives the host keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) when it
-/// rotates a destination by rename: the host's own constant, named in the retention-failed line. This
-/// sink declares no `keep`, so its file is truncated in place (1.5.5) and no archive is kept; the
-/// rename-only lines are raised only if the host reports a rename rotation.
+/// rotates a destination by rename and the operator sets no `keep`: the default this sink declares
+/// (`declares.json` `keep.path`), named in the retention-failed line.
 pub const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
 
 /// The most appends one instance holds in flight (1.5.5's `MAX_INFLIGHT_FILE_APPENDS`); past it the
@@ -119,10 +119,20 @@ pub const STATEMENT: Statement = Statement {
 /// The settings, parsed as the configuration grammar parses them (empty is `{}`).
 fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
     let bytes = if settings.is_empty() { b"{}" } else { settings };
-    serde_json::from_slice::<serde_json::Value>(bytes)
+    let parsed: FileSettings = serde_json::from_slice::<serde_json::Value>(bytes)
         .and_then(serde_json::from_value)
-        .map_err(|e| Refusal::failed(format!("settings: {e}")))
+        .map_err(|e| Refusal::failed(format!("settings: {e}")))?;
+    if parsed.keep.is_some_and(|k| k > MAX_KEEP) {
+        return Err(Refusal::failed(format!(
+            "settings: `keep` is at most {MAX_KEEP} archives"
+        )));
+    }
+    Ok(parsed)
 }
+
+/// The most archives the host keeps for one destination: a larger `keep` is refused here rather
+/// than cut short by the host.
+pub const MAX_KEEP: u32 = 64;
 
 /// One opened instance.
 #[derive(Debug)]

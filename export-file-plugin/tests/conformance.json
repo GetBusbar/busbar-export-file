@@ -4,7 +4,7 @@
     "bad_settings": [
       { "settings": {}, "refusal": "settings: missing field `path`" },
       { "settings": { "path": "/x", "rotate": 1 },
-        "refusal": "settings: unknown field `rotate`, expected `path` or `rotate_mb`" },
+        "refusal": "settings: unknown field `rotate`, expected one of `path`, `rotate_mb`, `keep`" },
       { "settings": { "path": "/x", "rotate_mb": "one" },
         "refusal": "settings: invalid type: string \"one\", expected u64" }
     ],
