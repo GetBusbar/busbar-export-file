@@ -4,26 +4,23 @@
 //! The **request-log FILE sink** (`module: request-log-file`, PUSH): each request-log batch the host
 //! builds for this instance is appended to a JSONL file.
 //!
-//! A `kind: export` plugin on the export kind's memory ABI (`busbar_contract::abi::export`, THE
-//! DESIGN §11): ONE door ([`door`], `plugin_door!`), linked into the binary as a compiled-in row or
-//! exported by the sibling `busbar-export-file-plugin` cdylib as its one symbol. Its manifest still
-//! carries [`DECLARES`] (`busbar-plugin-pack --declares-file declares.json`): its one series (1.5.5's
-//! shed counter), the five catalogue codes and the one destination.
+//! A `kind: export` plugin on the export kind's memory ABI (`busbar_contract::abi::export`): ONE door
+//! ([`door`], `plugin_door!`), linked in as a compiled-in row or exported by the sibling
+//! `busbar-export-file-plugin` cdylib. Its manifest carries [`DECLARES`] (`busbar-plugin-pack
+//! --declares-file declares.json`): one series, the five catalogue codes and the one destination.
 //!
 //! **The sink never opens a path.** Its manifest declares `path` a DESTINATION: the host binds the
-//! operator's configured path, and every append and every rotation is a host act on the host's
-//! bounded disk lane (THE DESIGN §11.11 R4, the `disk.append` service of §11.12): a delivery hands
-//! the batch, unchanged, to `disk.append` under the key `path`, and the host appends it whole —
-//! rotating the file first when it already holds `rotate_mb` MiB. This manifest declares `keep: 9`
-//! for `path`, so the host rotates it BY RENAME, keeping `<path>.1` .. `<path>.9` and dropping only
-//! the oldest (owner signed 2026-10-27, "Keep N, default 9"); an operator's `keep` setting sets N,
-//! and `keep: 0` truncates in place as 1.5.5 did. What the host reports
-//! back is raised in the words the sink always raised: an append the host could not make drops the
-//! batch with the open-failed ([`OPEN_FAILED`]) or append-failed ([`APPEND_FAILED`]) line, and each
-//! failed step of a rotation with its own declared code.
+//! operator's configured path, and every append and rotation is a host act on the host's bounded
+//! disk lane (`disk.append`). A delivery hands the batch, unchanged, to `disk.append` under the key
+//! `path`, and the host appends it whole, rotating first when the file already holds `rotate_mb`
+//! MiB. The manifest declares `keep: 9` for `path`, so the host rotates BY RENAME, keeping
+//! `<path>.1` .. `<path>.9` and dropping only the oldest; an operator's `keep` sets N, and
+//! `keep: 0` truncates in place. An append the host could not make drops the batch with the
+//! open-failed ([`OPEN_FAILED`]) or append-failed ([`APPEND_FAILED`]) line, and each failed step of a
+//! rotation has its own declared code.
 //!
-//! Settings are validated by the sink itself while the host validates the configuration, with the
-//! same serde shape ([`config::FileSettings`]) and so the same words.
+//! Settings are validated by the sink with the same serde shape ([`config::FileSettings`]) the host
+//! validates the configuration with, so the words match.
 
 #![forbid(unsafe_code)]
 
@@ -52,7 +49,7 @@ use config::FileSettings;
 /// The plugin's canonical name.
 pub const NAME: &str = "busbar-export-file";
 
-/// The `module:` an operator writes — the frozen 1.5.x module name.
+/// The `module:` an operator writes.
 pub const ALIAS: &str = "request-log-file";
 
 /// What this sink DECLARES to the host (the manifest's `declares` section): its one series, its
@@ -64,8 +61,8 @@ pub const DECLARES: &str = include_str!("../declares.json");
 /// (`declares.json` `keep.path`), named in the retention-failed line.
 pub const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
 
-/// The most appends one instance holds in flight (1.5.5's `MAX_INFLIGHT_FILE_APPENDS`); past it the
-/// host sheds the line and counts the declared shed counter.
+/// The most appends one instance holds in flight; past it the host sheds the line and counts the
+/// declared shed counter.
 pub const MAX_INFLIGHT: u32 = 64;
 
 /// The declared destination: the settings key naming the file.
@@ -248,7 +245,7 @@ impl FileSink {
             // Every other append that did not land is the append-failed line, in the host's words:
             // the write itself failed, or the append was never run (no ticket, no disk service, a
             // fault), which is no file-open problem, so not BUSBAR-7074 and its disk remedy. A
-            // plugin speaks only over the ABI (Part 2 #2): every dropped batch carries a declared code.
+            // plugin speaks only over the ABI: every dropped batch carries a declared code.
             Err(f) => {
                 tracing::warn!(diag = %APPEND_FAILED, path = %path, error = %f.why, "request-log file append failed; this log was dropped");
             }
@@ -297,9 +294,9 @@ impl SafeSlot for Deliver {
         };
         // A resumed delivery re-issues the append it parked (the host answers its stored result);
         // a fresh one appends the batch it was lent.
-        // The batch is the lent `in`, which a resume re-presents from continuation-owned memory
-        // (spec A.5), so it is never copied. What is parked is the path the append was issued
-        // against, so the lines a late answer raises name that file, not a reload's new one.
+        // The batch is the lent `in`, which a resume re-presents from continuation-owned memory, so
+        // it is never copied. What is parked is the path the append was issued against, so the lines
+        // a late answer raises name that file, not a reload's new one.
         let issued_at: Arc<str> = instance
             .resume::<Arc<str>>()
             .map(|p| *p)
