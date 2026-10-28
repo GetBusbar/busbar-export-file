@@ -304,14 +304,14 @@ fn a_refused_refresh_keeps_the_settings() {
         .expect_err("unparsed settings refuse");
     assert_eq!(r.outcome(), Outcome::Failed);
     assert_eq!(r.text().unwrap(), "settings: missing field `path`");
-    assert_eq!(s.path().as_deref(), Some("/a"));
+    assert_eq!(&*s.path(), "/a");
     match s.append(None, TICKET, b"{}\n") {
         Poll::Ready(Some(Err(f))) => assert_eq!(f.why, ConnFailure::Unarmed),
         other => panic!("a refused reload must not stop the deliveries: {other:?}"),
     }
     s.refresh(br#"{"path":"/b"}"#, &[], 3)
         .expect("a refresh applies");
-    assert_eq!(s.path().as_deref(), Some("/b"));
+    assert_eq!(&*s.path(), "/b");
 }
 
 /// The code a delivery raises and the destination it names are the ones the manifest DECLARES,

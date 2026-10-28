@@ -30,7 +30,7 @@
 pub mod config;
 
 use std::mem::size_of;
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 use std::task::Poll;
 
 use busbar_contract::abi::export::{
@@ -137,9 +137,9 @@ pub const MAX_KEEP: u32 = 64;
 /// One opened instance.
 #[derive(Debug)]
 pub struct FileSink {
-    /// The instance's settings. Always `Some` once opened: `open` and `refresh` refuse settings that
-    /// do not parse, so an instance never holds unparsed ones.
-    settings: RwLock<Option<FileSettings>>,
+    /// The configured path (the only setting the sink itself reads). `open` and `refresh` refuse
+    /// settings that do not parse, so an instance never holds unparsed ones.
+    path: RwLock<Arc<str>>,
 }
 
 impl Life for FileSink {
@@ -153,7 +153,7 @@ impl Life for FileSink {
     /// Refuses settings that do not parse, in the same words as [`Life::validate`].
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         parse(settings).map(|s| Self {
-            settings: RwLock::new(Some(s)),
+            path: RwLock::new(s.path.into()),
         })
     }
 
@@ -161,22 +161,15 @@ impl Life for FileSink {
     /// old ones stay.
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         let parsed = parse(settings)?;
-        *self
-            .settings
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = Some(parsed);
+        *self.path.write().unwrap_or_else(PoisonError::into_inner) = parsed.path.into();
         Ok(Refreshed::default())
     }
 }
 
 impl FileSink {
-    /// The configured path; `None` only if no settings are held, which an opened instance never is.
-    pub fn path(&self) -> Option<String> {
-        self.settings
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .map(|s| s.path.clone())
+    /// The configured path.
+    pub fn path(&self) -> Arc<str> {
+        Arc::clone(&self.path.read().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Have the host append `batch` (JSON lines, unchanged) to the destination on `host`'s disk
@@ -190,8 +183,7 @@ impl FileSink {
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         batch: &[u8],
     ) -> Poll<Option<Result<DiskWritten, DiskFailure>>> {
-        // `path().is_none()` is unreachable: open/refresh refuse settings that do not parse.
-        if batch.is_empty() || self.path().is_none() {
+        if batch.is_empty() {
             return Poll::Ready(None);
         }
         let Some(host) = host else {
@@ -210,7 +202,7 @@ impl FileSink {
     /// the rotation that ran before it, the rotation itself, then — when the batch did not land —
     /// the line that says it was dropped.
     pub fn settle(&self, answer: &Result<DiskWritten, DiskFailure>) {
-        self.settle_at(&self.path().unwrap_or_default(), answer);
+        self.settle_at(&self.path(), answer);
     }
 
     /// [`FileSink::settle`] naming `path`: the file the append was issued against, which a reload
@@ -308,10 +300,10 @@ impl SafeSlot for Deliver {
         // The batch is the lent `in`, which a resume re-presents from continuation-owned memory
         // (spec A.5), so it is never copied. What is parked is the path the append was issued
         // against, so the lines a late answer raises name that file, not a reload's new one.
-        let issued_at: String = instance
-            .resume::<String>()
+        let issued_at: Arc<str> = instance
+            .resume::<Arc<str>>()
             .map(|p| *p)
-            .unwrap_or_else(|| h.life().path().unwrap_or_default());
+            .unwrap_or_else(|| h.life().path());
         let batch: &[u8] = input.field(|i| &i.batch).bytes();
         match h.life().append(h.host(), instance.ticket(), batch) {
             Poll::Pending => {
