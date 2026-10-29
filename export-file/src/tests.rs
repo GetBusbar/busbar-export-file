@@ -6,6 +6,8 @@
 //! crate's `tests/conformance.rs`.
 
 use super::*;
+use busbar_contract::abi::mechanism::call::InHead;
+use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
 use std::sync::{Arc, Mutex};
 
 fn sink(settings: serde_json::Value) -> FileSink {
@@ -572,7 +574,10 @@ fn every_refusal_names_its_cause_through_the_door() {
         zeroed::<ServeOut>(),
     );
     assert_eq!(c.outcome, Outcome::Refused);
-    assert_eq!(c.error.as_deref(), Some(NO_ROUTE));
+    assert_eq!(
+        c.error.as_deref(),
+        Some(busbar_contract::abi::sdk::export::NO_ROUTE)
+    );
 
     let closed = reply::close_in(
         close,

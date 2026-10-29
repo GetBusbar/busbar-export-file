@@ -102,11 +102,11 @@ fn a_push_sink_refuses_scrape_and_serve_saying_why_through_both_doors() {
     let want = [
         (
             Outcome::Refused,
-            Some(busbar_export_file::NO_EXPOSITION.to_string()),
+            Some(busbar_contract::abi::sdk::export::NO_EXPOSITION.to_string()),
         ),
         (
             Outcome::Refused,
-            Some(busbar_export_file::NO_ROUTE.to_string()),
+            Some(busbar_contract::abi::sdk::export::NO_ROUTE.to_string()),
         ),
     ];
     for dropped in [false, true] {

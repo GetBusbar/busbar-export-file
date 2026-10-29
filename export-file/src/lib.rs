@@ -26,23 +26,20 @@
 
 pub mod config;
 
-use std::mem::size_of;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::task::Poll;
 
-use busbar_contract::abi::export::{
-    self, CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
-    StatusOut, Tail,
-};
+use busbar_contract::abi::export::{self, CheckIn, CheckOut, DeliverIn, ExportStream, Tail};
 use busbar_contract::abi::host::service::{
     DiskWritten, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED, DISK_ROTATED,
     DISK_SHIFT_FAILED,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
-use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement, REWRITE_ALIAS};
+use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
+use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement};
 use busbar_contract::abi::sdk::conn::{ConnFailure, DiskFailure, Host};
-use busbar_contract::abi::sdk::door::{abi_str, statement};
-use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
+use busbar_contract::abi::sdk::door::{alias, statement};
+use busbar_contract::abi::sdk::export::{tail, NoScrape, NoServe, Quiet};
+use busbar_contract::abi::sdk::life::{settings_as, Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use config::FileSettings;
 
@@ -83,27 +80,10 @@ pub const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
 const STREAMS: &[u8] = &[ExportStream::Logs as u8];
 
 /// The export kind's Statement tail: `logs`, and no route (a push-only sink).
-const TAIL: Tail = Tail {
-    head: KindTailHead {
-        size: size_of::<Tail>() as u32,
-        _reserved: 0,
-    },
-    streams: STREAMS.as_ptr(),
-    streams_len: STREAMS.len(),
-    routes: std::ptr::null(),
-    routes_len: 0,
-};
+const TAIL: Tail = tail(STREAMS, &[]);
 
 /// The module name an operator writes, as the alias the registry holds beside [`NAME`].
-const REWRITES: &[Rewrite] = &[Rewrite {
-    class: REWRITE_ALIAS,
-    _reserved: 0,
-    from: abi_str(ALIAS),
-    to: AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    },
-}];
+const REWRITES: &[Rewrite] = &[alias(ALIAS)];
 
 /// This plugin's Statement: its name, version, in-flight bound, alias and stream.
 pub const STATEMENT: Statement = Statement {
@@ -115,10 +95,7 @@ pub const STATEMENT: Statement = Statement {
 
 /// The settings, parsed as the configuration grammar parses them (empty is `{}`).
 fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
-    let bytes = if settings.is_empty() { b"{}" } else { settings };
-    let parsed: FileSettings = serde_json::from_slice::<serde_json::Value>(bytes)
-        .and_then(serde_json::from_value)
-        .map_err(|e| Refusal::failed(format!("settings: {e}")))?;
+    let parsed: FileSettings = settings_as(settings)?;
     if parsed.keep.is_some_and(|k| k > MAX_KEEP) {
         return Err(Refusal::failed(format!(
             "settings: `keep` is at most {MAX_KEEP} archives"
@@ -270,10 +247,6 @@ type State = Held<FileSink>;
 /// The error texts of the door's REFUSED answers: one per cause, so the host's line names why
 /// instead of a bare outcome.
 pub const NO_INSTANCE: &str = "no opened request-log-file instance";
-/// `scrape` on a push sink: it carries no `metrics` stream.
-pub const NO_EXPOSITION: &str = "this sink carries no metrics stream, so it renders no exposition";
-/// `serve` on a sink that declares no route.
-pub const NO_ROUTE: &str = "this sink declares no route, so it serves no request";
 
 /// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
 /// while the host appends; fire-and-forget, so READY whatever became of the line once the host
@@ -316,31 +289,6 @@ impl SafeSlot for Deliver {
     }
 }
 
-/// `scrape`: REFUSED, saying why — a push sink carries no `metrics` stream and renders no
-/// exposition (the host scrapes only the sink that carries `metrics`).
-pub struct Scrape;
-
-impl SafeSlot for Scrape {
-    type In = ScrapeIn;
-    type Out = ScrapeOut;
-    type State = State;
-    fn call(_: Instance<'_, State>, _: Lent<'_, ScrapeIn>, mut out: Out<'_, ScrapeOut>) -> Outcome {
-        out.fail(Refusal::refused(NO_EXPOSITION))
-    }
-}
-
-/// `status`: nothing to report.
-pub struct Status;
-
-impl SafeSlot for Status {
-    type In = InHead;
-    type Out = StatusOut;
-    type State = State;
-    fn call(_: Instance<'_, State>, _: Lent<'_, InHead>, _: Out<'_, StatusOut>) -> Outcome {
-        Outcome::Ready
-    }
-}
-
 /// `check`: no check across instances; each instance's settings are `validate`'s.
 pub struct Check;
 
@@ -353,29 +301,18 @@ impl SafeSlot for Check {
     }
 }
 
-/// `serve`: REFUSED, saying why — the sink declares no route (the host serves only declared
-/// routes).
-pub struct Serve;
-
-impl SafeSlot for Serve {
-    type In = ServeIn;
-    type Out = ServeOut;
-    type State = State;
-    fn call(_: Instance<'_, State>, _: Lent<'_, ServeIn>, mut out: Out<'_, ServeOut>) -> Outcome {
-        out.fail(Refusal::refused(NO_ROUTE))
-    }
-}
-
+// `scrape` and `serve` are REFUSED, saying why (a push sink carries no `metrics` stream and
+// declares no route); `status` has nothing to report.
 mod table {
-    use super::{Check, Deliver, FileSink, Safe, Scrape, Serve, Status};
+    use super::{Check, Deliver, FileSink, NoScrape, NoServe, Quiet, Safe};
 
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::export::Ops,
         statement: super::STATEMENT,
         lifecycle: life(FileSink),
         kind_ops: {
-            deliver: Safe<Deliver>, scrape: Safe<Scrape>, status: Safe<Status>,
-            check: Safe<Check>, serve: Safe<Serve>,
+            deliver: Safe<Deliver>, scrape: Safe<NoScrape<FileSink>>,
+            status: Safe<Quiet<FileSink>>, check: Safe<Check>, serve: Safe<NoServe<FileSink>>,
         },
     }
 }
