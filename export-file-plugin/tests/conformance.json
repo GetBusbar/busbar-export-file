@@ -6,7 +6,10 @@
       { "settings": { "path": "/x", "rotate": 1 },
         "refusal": "settings: unknown field `rotate`, expected one of `path`, `rotate_mb`, `keep`" },
       { "settings": { "path": "/x", "rotate_mb": "one" },
-        "refusal": "settings: invalid type: string \"one\", expected u64" }
+        "refusal": "settings: invalid type: string \"one\", expected u64" },
+      { "settings": { "path": "" }, "refusal": "settings: `path` must name a file" },
+      { "settings": { "path": "x", "rotate_mb": 0 },
+        "refusal": "settings: `rotate_mb` must be at least 1" }
     ],
     "deliver": [
       { "stream": "logs",
