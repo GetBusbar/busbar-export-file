@@ -9,8 +9,8 @@ use super::*;
 use crate::door::{REWRITES, STREAMS, TAIL};
 use crate::tests::{report, TICKET};
 use busbar_contract::abi::export::{DeliverIn, ExportStream, Tail};
-use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
 use busbar_contract::abi::mechanism::call::InHead;
+use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
 
 /// The Statement: the plugin's name and version, 1.5.5's in-flight bound, the module name as its
