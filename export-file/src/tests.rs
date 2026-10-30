@@ -54,6 +54,15 @@ fn the_sink_keeps_nine_archives_unless_the_operator_says_otherwise() {
     );
 }
 
+/// A path the host can never bind (empty, or holding a NUL) is refused at settings time, not
+/// left to drop every batch at runtime.
+#[test]
+fn a_path_the_host_cannot_bind_is_refused() {
+    let want = "settings: `path` must name a file";
+    assert_eq!(refused(r#"{"path":""}"#), want);
+    assert_eq!(refused(r#"{"path":"a\u0000b"}"#), want);
+}
+
 /// EFILE-7: a wrong-typed `rotate_mb` is refused in the configuration's own serde words.
 #[test]
 fn a_wrong_typed_rotate_mb_is_refused_in_serde_words() {
