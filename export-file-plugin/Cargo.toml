@@ -36,3 +36,6 @@ busbar-export-file-plugin = { path = ".", features = ["dropped-in"] }
 # never in the shipped artifact. Same pinned rev, so one busbar source resolves.
 busbar-plugin-loader = { workspace = true }
 busbar-test-kit = { workspace = true }
+# The shared host-services double, so a test can hold a `disk.append` and answer it later (the
+# resume test): dev-only, never in the shipped artifact.
+busbar-contract = { workspace = true, features = ["services-double"] }
