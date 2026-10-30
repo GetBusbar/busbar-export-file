@@ -265,6 +265,8 @@ type State = Held<FileSink>;
 /// The error texts of the door's REFUSED answers: one per cause, so the host's line names why
 /// instead of a bare outcome.
 pub const NO_INSTANCE: &str = "no opened request-log-file instance";
+/// `check` at a phase this sink does not know.
+pub const UNKNOWN_PHASE: &str = "not a check phase this sink knows (limits or instances)";
 
 /// The (path, `keep`) a delivery's lines name: the pair parked when the append was issued if this is
 /// a resume, else the instance's current pair, so a reload that landed in between is not followed.

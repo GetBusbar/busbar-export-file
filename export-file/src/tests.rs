@@ -649,3 +649,59 @@ fn every_refusal_names_its_cause_through_the_door() {
     );
     assert_eq!(closed.outcome, Outcome::Ready);
 }
+
+/// `check` is the sink's own: at the limits and instances phases it has nothing to say (READY, no
+/// findings), and a phase it does not know is REFUSED saying why, never run as another (the words
+/// every export sibling uses). A `check` on no instance answers `NO_INSTANCE`; the test kit never
+/// enters a kind op on no instance, so that arm is not driven here.
+/// RED before: an unknown phase answered READY.
+#[test]
+fn check_refuses_a_phase_it_does_not_know_through_the_door() {
+    use busbar_contract::abi::export::{
+        CheckIn, CheckOut, Ops, CHECK_PHASE_INSTANCES, CHECK_PHASE_LIMITS,
+    };
+    let view = DoorView::of(MACRO_DOOR);
+    let open = view.op::<Ops>(|t| &t.head.open).expect("open");
+    let close = view.op::<Ops>(|t| &t.head.close).expect("close");
+    let check_op = view.op::<Ops>(|t| &t.check).expect("check");
+    let mut opened = reply::call_in(
+        open,
+        None,
+        &TestIn::<OpenIn>::new()
+            .set(|i| &i.head.op, slot::OPEN)
+            .settings(br#"{"path":"/x.jsonl"}"#),
+        zeroed::<OpenOut>(),
+    );
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let instance = opened.take_instance().expect("an instance");
+    let check = |phase: u32| {
+        reply::call_in(
+            check_op,
+            Some(&instance),
+            &TestIn::<CheckIn>::new()
+                .set(|i| &i.head.op, check_op.index())
+                .set(|i| &i.phase, phase),
+            zeroed::<CheckOut>(),
+        )
+    };
+    for phase in [CHECK_PHASE_LIMITS, CHECK_PHASE_INSTANCES] {
+        let known = check(phase);
+        assert_eq!(known.outcome, Outcome::Ready);
+        assert!(known.owned.is_empty(), "{:?}", known.owned);
+    }
+    let unknown = check(7);
+    assert_eq!(unknown.outcome, Outcome::Refused);
+    assert_eq!(unknown.error.as_deref(), Some(UNKNOWN_PHASE));
+
+    let closed = reply::close_in(
+        close,
+        instance,
+        &TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
+        {
+            let mut h: OutHead = zeroed();
+            h.size = size_of::<OutHead>() as u32;
+            h
+        },
+    );
+    assert_eq!(closed.outcome, Outcome::Ready);
+}
