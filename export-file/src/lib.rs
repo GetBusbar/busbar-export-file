@@ -96,6 +96,12 @@ pub const STATEMENT: Statement = Statement {
 /// The settings, parsed as the configuration grammar parses them (empty is `{}`).
 fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
     let parsed: FileSettings = settings_as(settings)?;
+    if parsed.path.is_empty() || parsed.path.contains('\0') {
+        return Err(Refusal::failed("settings: `path` must name a file"));
+    }
+    if parsed.rotate_mb == Some(0) {
+        return Err(Refusal::failed("settings: `rotate_mb` must be at least 1"));
+    }
     if parsed.keep.is_some_and(|k| k > MAX_KEEP) {
         return Err(Refusal::failed(format!(
             "settings: `keep` is at most {MAX_KEEP} archives"
@@ -111,9 +117,11 @@ pub const MAX_KEEP: u32 = 64;
 /// One opened instance.
 #[derive(Debug)]
 pub struct FileSink {
-    /// The configured path (the only setting the sink itself reads). `open` and `refresh` refuse
-    /// settings that do not parse, so an instance never holds unparsed ones.
-    path: RwLock<Arc<str>>,
+    /// The configured path (the only setting the sink itself reads) beside the effective `keep`
+    /// (the operator's, else the declared [`ROTATE_ARCHIVE_LIMIT`]): ONE lock, written once per
+    /// settings, so a reader never pairs one reload's path with another's keep. `open` and
+    /// `refresh` refuse settings that do not parse, so an instance never holds unparsed ones.
+    issued: RwLock<(Arc<str>, u32)>,
 }
 
 impl Life for FileSink {
@@ -127,7 +135,7 @@ impl Life for FileSink {
     /// Refuses settings that do not parse, in the same words as [`Life::validate`].
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         parse(settings).map(|s| Self {
-            path: RwLock::new(s.path.into()),
+            issued: RwLock::new((s.path.into(), s.keep.unwrap_or(ROTATE_ARCHIVE_LIMIT))),
         })
     }
 
@@ -135,7 +143,10 @@ impl Life for FileSink {
     /// old ones stay.
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         let parsed = parse(settings)?;
-        *self.path.write().unwrap_or_else(PoisonError::into_inner) = parsed.path.into();
+        *self.issued.write().unwrap_or_else(PoisonError::into_inner) = (
+            parsed.path.into(),
+            parsed.keep.unwrap_or(ROTATE_ARCHIVE_LIMIT),
+        );
         Ok(Refreshed::default())
     }
 }
@@ -143,7 +154,18 @@ impl Life for FileSink {
 impl FileSink {
     /// The configured path.
     pub fn path(&self) -> Arc<str> {
-        Arc::clone(&self.path.read().unwrap_or_else(PoisonError::into_inner))
+        self.current().0
+    }
+
+    /// The configured (path, `keep`), read together under one lock.
+    pub fn current(&self) -> (Arc<str>, u32) {
+        let g = self.issued.read().unwrap_or_else(PoisonError::into_inner);
+        (Arc::clone(&g.0), g.1)
+    }
+
+    /// The effective `keep`: how many archives the host keeps beside the path.
+    pub fn keep(&self) -> u32 {
+        self.current().1
     }
 
     /// Have the host append `batch` (JSON lines, unchanged) to the destination on `host`'s disk
@@ -176,12 +198,14 @@ impl FileSink {
     /// the rotation that ran before it, the rotation itself, then — when the batch did not land —
     /// the line that says it was dropped.
     pub fn settle(&self, answer: &Result<DiskWritten, DiskFailure>) {
-        self.settle_at(&self.path(), answer);
+        let (path, keep) = self.current();
+        self.settle_at(&path, keep, answer);
     }
 
     /// [`FileSink::settle`] naming `path`: the file the append was issued against, which a reload
-    /// that landed while the append was pending may have replaced in the settings.
-    pub fn settle_at(&self, path: &str, answer: &Result<DiskWritten, DiskFailure>) {
+    /// that landed while the append was pending may have replaced in the settings, and the `keep`
+    /// that was in force with it.
+    pub fn settle_at(&self, path: &str, keep: u32, answer: &Result<DiskWritten, DiskFailure>) {
         let rotation = match answer {
             Ok(w) => *w,
             Err(f) => f.rotation,
@@ -189,8 +213,8 @@ impl FileSink {
         if rotation.faults & DISK_RETENTION_FAILED != 0 {
             tracing::warn!(
                 diag = %RETENTION_FAILED,
-                archive = %format!("{path}.{ROTATE_ARCHIVE_LIMIT}"),
-                "request-log archive retention cleanup failed; the archive series may exceed ROTATE_ARCHIVE_LIMIT"
+                archive = %format!("{path}.{keep}"),
+                "request-log archive retention cleanup failed; the archive series may exceed its `keep` limit"
             );
         }
         if rotation.faults & DISK_SHIFT_FAILED != 0 {
@@ -232,13 +256,7 @@ impl FileSink {
 
 /// A report of no rotation.
 const fn no_rotation() -> DiskWritten {
-    DiskWritten {
-        size: 0,
-        rotated: 0,
-        faults: 0,
-        _reserved: [0; 2],
-        written: 0,
-    }
+    DiskWritten::ZERO
 }
 
 /// The instance state every slot reads.
@@ -247,6 +265,12 @@ type State = Held<FileSink>;
 /// The error texts of the door's REFUSED answers: one per cause, so the host's line names why
 /// instead of a bare outcome.
 pub const NO_INSTANCE: &str = "no opened request-log-file instance";
+
+/// The (path, `keep`) a delivery's lines name: the pair parked when the append was issued if this is
+/// a resume, else the instance's current pair, so a reload that landed in between is not followed.
+fn issued_at(parked: Option<Box<(Arc<str>, u32)>>, sink: &FileSink) -> (Arc<str>, u32) {
+    parked.map_or_else(|| sink.current(), |p| *p)
+}
 
 /// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
 /// while the host appends; fire-and-forget, so READY whatever became of the line once the host
@@ -268,12 +292,9 @@ impl SafeSlot for Deliver {
         // A resumed delivery re-issues the append it parked (the host answers its stored result);
         // a fresh one appends the batch it was lent.
         // The batch is the lent `in`, which a resume re-presents from continuation-owned memory, so
-        // it is never copied. What is parked is the path the append was issued against, so the lines
-        // a late answer raises name that file, not a reload's new one.
-        let issued_at: Arc<str> = instance
-            .resume::<Arc<str>>()
-            .map(|p| *p)
-            .unwrap_or_else(|| h.life().path());
+        // it is never copied. What is parked is the path (and its `keep`) the append was issued
+        // against, so the lines a late answer raises name that file, not a reload's new one.
+        let issued_at = issued_at(instance.resume::<(Arc<str>, u32)>(), h.life());
         let batch: &[u8] = input.field(|i| &i.batch).bytes();
         match h.life().append(h.host(), instance.ticket(), batch) {
             Poll::Pending => {
@@ -281,7 +302,7 @@ impl SafeSlot for Deliver {
                 Outcome::Pending
             }
             Poll::Ready(Some(answer)) => {
-                h.life().settle_at(&issued_at, &answer);
+                h.life().settle_at(&issued_at.0, issued_at.1, &answer);
                 Outcome::Ready
             }
             Poll::Ready(None) => Outcome::Ready,

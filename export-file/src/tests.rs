@@ -54,6 +54,25 @@ fn the_sink_keeps_nine_archives_unless_the_operator_says_otherwise() {
     );
 }
 
+/// A path the host can never bind (empty, or holding a NUL) is refused at settings time, not
+/// left to drop every batch at runtime.
+#[test]
+fn a_path_the_host_cannot_bind_is_refused() {
+    let want = "settings: `path` must name a file";
+    assert_eq!(refused(r#"{"path":""}"#), want);
+    assert_eq!(refused(r#"{"path":"a\u0000b"}"#), want);
+}
+
+/// `rotate_mb: 0` would rotate before every append; core's own grammar refuses it too.
+#[test]
+fn a_zero_rotate_mb_is_refused() {
+    assert_eq!(
+        refused(r#"{"path":"x","rotate_mb":0}"#),
+        "settings: `rotate_mb` must be at least 1"
+    );
+    assert!(FileSink::validate(br#"{"path":"x","rotate_mb":1}"#).is_ok());
+}
+
 /// EFILE-7: a wrong-typed `rotate_mb` is refused in the configuration's own serde words.
 #[test]
 fn a_wrong_typed_rotate_mb_is_refused_in_serde_words() {
@@ -244,6 +263,22 @@ fn a_rotation_is_raised_step_by_step() {
     assert_eq!(field(&events[2], "path"), "/var/log/x.jsonl");
 }
 
+/// The retention line names the archive the host drops: `<path>.<keep>` with the operator's `keep`.
+#[test]
+fn the_retention_line_names_the_effective_keep() {
+    let retention = Ok(report(0, DISK_RETENTION_FAILED, 3));
+    let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 1, "keep": 3}));
+    let events = logged(|| s.settle(&retention));
+    assert_eq!(field(&events[0], "archive"), "/var/log/x.jsonl.3");
+    assert_eq!(
+        field(&events[0], "message"),
+        "request-log archive retention cleanup failed; the archive series may exceed its `keep` limit"
+    );
+    // A reload between issue and settle: the issued-at pair is what is named.
+    let events = logged(|| s.settle_at("/old.jsonl", 5, &retention));
+    assert_eq!(field(&events[0], "archive"), "/old.jsonl.5");
+}
+
 /// C5: each rotation fault bit alone raises exactly its own code, and nothing else.
 #[test]
 fn each_rotation_fault_bit_raises_exactly_its_own_code() {
@@ -351,7 +386,12 @@ fn what_the_sink_raises_is_declared() {
 /// alias, the `logs` stream and no route (a push-only sink).
 #[test]
 fn the_statement_states_the_sink() {
-    assert_eq!(STATEMENT.name.len, NAME.len());
+    assert_eq!(DoorView::of(MACRO_DOOR).name(), NAME);
+    assert_eq!(NAME, "busbar-export-file");
+    assert_eq!(STATEMENT.version.len, env!("CARGO_PKG_VERSION").len());
+    // The kit has no safe reader for the version's bytes (`DoorView::name` reads the name only), and
+    // this crate forbids unsafe: the version is pinned by presence and length.
+    assert!(!STATEMENT.version.is_absent());
     assert_eq!(STATEMENT.max_inflight, 64);
     assert_eq!(STATEMENT.rewrites_len, 1);
     assert_eq!(REWRITES[0].class, REWRITE_ALIAS);
@@ -374,6 +414,7 @@ fn a_settled_append_names_the_path_it_was_issued_against() {
     let events = logged(|| {
         s.settle_at(
             "/old.jsonl",
+            9,
             &failed(
                 busbar_contract::abi::host::service::DISK_APPEND_FAILED,
                 "No space left on device (os error 28)",
@@ -382,9 +423,30 @@ fn a_settled_append_names_the_path_it_was_issued_against() {
     });
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(field(&events[0], "path"), "/old.jsonl");
-    let events = logged(|| s.settle_at("/old.jsonl", &Ok(report(DISK_ROTATED, 0, 3))));
+    let events = logged(|| s.settle_at("/old.jsonl", 9, &Ok(report(DISK_ROTATED, 0, 3))));
     assert_eq!(field(&events[0], "path"), "/old.jsonl");
     assert_eq!(field(&events[0], "archive"), "/old.jsonl.1");
+}
+
+/// A delivery resumed after a reload settles against the (path, keep) its append was issued at, not
+/// the reloaded settings. The test kit cannot show this through the door: the lines a delivery
+/// raises are folded into the reply envelope, which `reply::call_in` clears before returning, so
+/// the unit that holds the decision (`issued_at`, the pair `Deliver` parks) is tested directly.
+#[test]
+fn a_resumed_delivery_settles_against_the_pair_it_parked() {
+    let s = sink(serde_json::json!({"path": "/a.jsonl", "keep": 3}));
+    let parked = issued_at(None, &s);
+    assert_eq!((&*parked.0, parked.1), ("/a.jsonl", 3));
+    s.refresh(br#"{"path":"/b.jsonl"}"#, &[], 2)
+        .expect("a refresh applies");
+    let resumed = issued_at(Some(Box::new(parked)), &s);
+    assert_eq!((&*resumed.0, resumed.1), ("/a.jsonl", 3));
+    let fresh = issued_at(None, &s);
+    assert_eq!((&*fresh.0, fresh.1), ("/b.jsonl", ROTATE_ARCHIVE_LIMIT));
+    let events = logged(|| {
+        s.settle_at(&resumed.0, resumed.1, &failed(DISK_OPEN_FAILED, "gone"));
+    });
+    assert_eq!(field(&events[0], "path"), "/a.jsonl");
 }
 
 // ── THE DELIVER OP, THROUGH THE DOOR (C4) ───────────────────────────────────────────────────────
