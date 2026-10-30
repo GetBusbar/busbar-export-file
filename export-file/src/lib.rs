@@ -319,8 +319,19 @@ impl SafeSlot for Check {
     type In = CheckIn;
     type Out = CheckOut;
     type State = State;
-    fn call(_: Instance<'_, State>, _: Lent<'_, CheckIn>, _: Out<'_, CheckOut>) -> Outcome {
-        Outcome::Ready
+    fn call(
+        instance: Instance<'_, State>,
+        input: Lent<'_, CheckIn>,
+        mut out: Out<'_, CheckOut>,
+    ) -> Outcome {
+        if instance.get().is_none() {
+            return out.fail(Refusal::refused(NO_INSTANCE));
+        }
+        match input.phase {
+            export::CHECK_PHASE_LIMITS | export::CHECK_PHASE_INSTANCES => Outcome::Ready,
+            // A phase this sink does not know is refused, never run as another.
+            _ => out.fail(Refusal::refused(UNKNOWN_PHASE)),
+        }
     }
 }
 
