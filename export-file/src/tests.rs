@@ -423,6 +423,27 @@ fn a_settled_append_names_the_path_it_was_issued_against() {
     assert_eq!(field(&events[0], "archive"), "/old.jsonl.1");
 }
 
+/// A delivery resumed after a reload settles against the (path, keep) its append was issued at, not
+/// the reloaded settings. The test kit cannot show this through the door: the lines a delivery
+/// raises are folded into the reply envelope, which `reply::call_in` clears before returning, so
+/// the unit that holds the decision (`issued_at`, the pair `Deliver` parks) is tested directly.
+#[test]
+fn a_resumed_delivery_settles_against_the_pair_it_parked() {
+    let s = sink(serde_json::json!({"path": "/a.jsonl", "keep": 3}));
+    let parked = issued_at(None, &s);
+    assert_eq!((&*parked.0, parked.1), ("/a.jsonl", 3));
+    s.refresh(br#"{"path":"/b.jsonl"}"#, &[], 2)
+        .expect("a refresh applies");
+    let resumed = issued_at(Some(Box::new(parked)), &s);
+    assert_eq!((&*resumed.0, resumed.1), ("/a.jsonl", 3));
+    let fresh = issued_at(None, &s);
+    assert_eq!((&*fresh.0, fresh.1), ("/b.jsonl", ROTATE_ARCHIVE_LIMIT));
+    let events = logged(|| {
+        s.settle_at(&resumed.0, resumed.1, &failed(DISK_OPEN_FAILED, "gone"));
+    });
+    assert_eq!(field(&events[0], "path"), "/a.jsonl");
+}
+
 // ── THE DELIVER OP, THROUGH THE DOOR (C4) ───────────────────────────────────────────────────────
 
 use busbar_contract::abi::host::service::{DiskAppendIn, DISK_APPEND_FAILED};

@@ -266,6 +266,12 @@ type State = Held<FileSink>;
 /// instead of a bare outcome.
 pub const NO_INSTANCE: &str = "no opened request-log-file instance";
 
+/// The (path, `keep`) a delivery's lines name: the pair parked when the append was issued if this is
+/// a resume, else the instance's current pair, so a reload that landed in between is not followed.
+fn issued_at(parked: Option<Box<(Arc<str>, u32)>>, sink: &FileSink) -> (Arc<str>, u32) {
+    parked.map_or_else(|| (sink.path(), sink.keep()), |p| *p)
+}
+
 /// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
 /// while the host appends; fire-and-forget, so READY whatever became of the line once the host
 /// answered ([`FileSink::settle`] raises what it reported).
@@ -288,10 +294,7 @@ impl SafeSlot for Deliver {
         // The batch is the lent `in`, which a resume re-presents from continuation-owned memory, so
         // it is never copied. What is parked is the path (and its `keep`) the append was issued
         // against, so the lines a late answer raises name that file, not a reload's new one.
-        let issued_at: (Arc<str>, u32) = instance
-            .resume::<(Arc<str>, u32)>()
-            .map(|p| *p)
-            .unwrap_or_else(|| (h.life().path(), h.life().keep()));
+        let issued_at = issued_at(instance.resume::<(Arc<str>, u32)>(), h.life());
         let batch: &[u8] = input.field(|i| &i.batch).bytes();
         match h.life().append(h.host(), instance.ticket(), batch) {
             Poll::Pending => {
