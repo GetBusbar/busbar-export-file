@@ -2,11 +2,11 @@
 [package]
 name = "busbar-export-file"
 version = "1.6.0"
-publish = false            # a first-party plugin crate; shipped linked into busbar or as a signed tarball
-edition = "2021"
-rust-version = "1.97"
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "The request-log FILE export sink (`module: request-log-file`): appends each request-log line as JSONL, rotating it at `rotate_mb` by rename and keeping 9 archives by default (`keep: 0` truncates in place, as 1.5.5 did). Every file act is performed by the host on the destination it opened for the operator's configured path; the sink never opens a path."
-license = "Apache-2.0"
+license.workspace = true
 
 [lib]
 # rlib: THE LOGIC and its door. A build that LINKS this crate registers `door` as its compiled-in
@@ -33,3 +33,6 @@ tracing = { workspace = true }
 serde_json = { workspace = true }
 # The contract's plugin test harness (fake host, door view, reply copies): dev-only, so no shipped image carries it.
 busbar-contract = { workspace = true, features = ["test-seal"] }
+
+[lints]
+workspace = true

@@ -2,11 +2,11 @@
 [package]
 name = "busbar-export-file-plugin"
 version = "1.6.0"
-publish = false            # first-party signed cdylib, shipped as a packed/signed tarball, not to crates.io
-edition = "2021"
-rust-version = "1.97"
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "First-party signed kind:export plugin cdylib: the request-log FILE sink (`module: request-log-file`), packaged as a droppable busbar plugin. Drop the signed tarball into `plugins/` and name it from an `export.<name>.module: request-log-file` block."
-license = "Apache-2.0"
+license.workspace = true
 
 [lib]
 # cdylib: the DROPPED-IN door (a signed tarball in `plugins/`). rlib: REQUIRED for `cargo test` to
@@ -39,3 +39,6 @@ busbar-test-kit = { workspace = true }
 # The shared host-services double, so a test can hold a `disk.append` and answer it later (the
 # resume test): dev-only, never in the shipped artifact.
 busbar-contract = { workspace = true, features = ["services-double"] }
+
+[lints]
+workspace = true
