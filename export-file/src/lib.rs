@@ -199,7 +199,7 @@ impl FileSink {
     /// [`FileSink::settle`] naming `path`: the file the append was issued against, which a reload
     /// that landed while the append was pending may have replaced in the settings, and the `keep`
     /// that was in force with it.
-    pub fn settle_at(&self, path: &str, _keep: u32, answer: &Result<DiskWritten, DiskFailure>) {
+    pub fn settle_at(&self, path: &str, keep: u32, answer: &Result<DiskWritten, DiskFailure>) {
         let rotation = match answer {
             Ok(w) => *w,
             Err(f) => f.rotation,
@@ -207,8 +207,8 @@ impl FileSink {
         if rotation.faults & DISK_RETENTION_FAILED != 0 {
             tracing::warn!(
                 diag = %RETENTION_FAILED,
-                archive = %format!("{path}.{ROTATE_ARCHIVE_LIMIT}"),
-                "request-log archive retention cleanup failed; the archive series may exceed ROTATE_ARCHIVE_LIMIT"
+                archive = %format!("{path}.{keep}"),
+                "request-log archive retention cleanup failed; the archive series may exceed its `keep` limit"
             );
         }
         if rotation.faults & DISK_SHIFT_FAILED != 0 {
