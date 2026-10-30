@@ -263,6 +263,22 @@ fn a_rotation_is_raised_step_by_step() {
     assert_eq!(field(&events[2], "path"), "/var/log/x.jsonl");
 }
 
+/// The retention line names the archive the host drops: `<path>.<keep>` with the operator's `keep`.
+#[test]
+fn the_retention_line_names_the_effective_keep() {
+    let retention = Ok(report(0, DISK_RETENTION_FAILED, 3));
+    let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 1, "keep": 3}));
+    let events = logged(|| s.settle(&retention));
+    assert_eq!(field(&events[0], "archive"), "/var/log/x.jsonl.3");
+    assert_eq!(
+        field(&events[0], "message"),
+        "request-log archive retention cleanup failed; the archive series may exceed its `keep` limit"
+    );
+    // A reload between issue and settle: the issued-at pair is what is named.
+    let events = logged(|| s.settle_at("/old.jsonl", 5, &retention));
+    assert_eq!(field(&events[0], "archive"), "/old.jsonl.5");
+}
+
 /// C5: each rotation fault bit alone raises exactly its own code, and nothing else.
 #[test]
 fn each_rotation_fault_bit_raises_exactly_its_own_code() {
@@ -393,6 +409,7 @@ fn a_settled_append_names_the_path_it_was_issued_against() {
     let events = logged(|| {
         s.settle_at(
             "/old.jsonl",
+            9,
             &failed(
                 busbar_contract::abi::host::service::DISK_APPEND_FAILED,
                 "No space left on device (os error 28)",
@@ -401,7 +418,7 @@ fn a_settled_append_names_the_path_it_was_issued_against() {
     });
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(field(&events[0], "path"), "/old.jsonl");
-    let events = logged(|| s.settle_at("/old.jsonl", &Ok(report(DISK_ROTATED, 0, 3))));
+    let events = logged(|| s.settle_at("/old.jsonl", 9, &Ok(report(DISK_ROTATED, 0, 3))));
     assert_eq!(field(&events[0], "path"), "/old.jsonl");
     assert_eq!(field(&events[0], "archive"), "/old.jsonl.1");
 }

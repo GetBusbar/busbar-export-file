@@ -120,6 +120,9 @@ pub struct FileSink {
     /// The configured path (the only setting the sink itself reads). `open` and `refresh` refuse
     /// settings that do not parse, so an instance never holds unparsed ones.
     path: RwLock<Arc<str>>,
+    /// The effective `keep`: the operator's, else the declared [`ROTATE_ARCHIVE_LIMIT`]. Set with
+    /// `path`, from the same parsed settings.
+    keep: RwLock<u32>,
 }
 
 impl Life for FileSink {
@@ -133,6 +136,7 @@ impl Life for FileSink {
     /// Refuses settings that do not parse, in the same words as [`Life::validate`].
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         parse(settings).map(|s| Self {
+            keep: RwLock::new(s.keep.unwrap_or(ROTATE_ARCHIVE_LIMIT)),
             path: RwLock::new(s.path.into()),
         })
     }
@@ -141,6 +145,8 @@ impl Life for FileSink {
     /// old ones stay.
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         let parsed = parse(settings)?;
+        *self.keep.write().unwrap_or_else(PoisonError::into_inner) =
+            parsed.keep.unwrap_or(ROTATE_ARCHIVE_LIMIT);
         *self.path.write().unwrap_or_else(PoisonError::into_inner) = parsed.path.into();
         Ok(Refreshed::default())
     }
@@ -150,6 +156,11 @@ impl FileSink {
     /// The configured path.
     pub fn path(&self) -> Arc<str> {
         Arc::clone(&self.path.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// The effective `keep`: how many archives the host keeps beside the path.
+    pub fn keep(&self) -> u32 {
+        *self.keep.read().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Have the host append `batch` (JSON lines, unchanged) to the destination on `host`'s disk
@@ -182,12 +193,13 @@ impl FileSink {
     /// the rotation that ran before it, the rotation itself, then — when the batch did not land —
     /// the line that says it was dropped.
     pub fn settle(&self, answer: &Result<DiskWritten, DiskFailure>) {
-        self.settle_at(&self.path(), answer);
+        self.settle_at(&self.path(), self.keep(), answer);
     }
 
     /// [`FileSink::settle`] naming `path`: the file the append was issued against, which a reload
-    /// that landed while the append was pending may have replaced in the settings.
-    pub fn settle_at(&self, path: &str, answer: &Result<DiskWritten, DiskFailure>) {
+    /// that landed while the append was pending may have replaced in the settings, and the `keep`
+    /// that was in force with it.
+    pub fn settle_at(&self, path: &str, _keep: u32, answer: &Result<DiskWritten, DiskFailure>) {
         let rotation = match answer {
             Ok(w) => *w,
             Err(f) => f.rotation,
@@ -274,12 +286,12 @@ impl SafeSlot for Deliver {
         // A resumed delivery re-issues the append it parked (the host answers its stored result);
         // a fresh one appends the batch it was lent.
         // The batch is the lent `in`, which a resume re-presents from continuation-owned memory, so
-        // it is never copied. What is parked is the path the append was issued against, so the lines
-        // a late answer raises name that file, not a reload's new one.
-        let issued_at: Arc<str> = instance
-            .resume::<Arc<str>>()
+        // it is never copied. What is parked is the path (and its `keep`) the append was issued
+        // against, so the lines a late answer raises name that file, not a reload's new one.
+        let issued_at: (Arc<str>, u32) = instance
+            .resume::<(Arc<str>, u32)>()
             .map(|p| *p)
-            .unwrap_or_else(|| h.life().path());
+            .unwrap_or_else(|| (h.life().path(), h.life().keep()));
         let batch: &[u8] = input.field(|i| &i.batch).bytes();
         match h.life().append(h.host(), instance.ticket(), batch) {
             Poll::Pending => {
@@ -287,7 +299,7 @@ impl SafeSlot for Deliver {
                 Outcome::Pending
             }
             Poll::Ready(Some(answer)) => {
-                h.life().settle_at(&issued_at, &answer);
+                h.life().settle_at(&issued_at.0, issued_at.1, &answer);
                 Outcome::Ready
             }
             Poll::Ready(None) => Outcome::Ready,
