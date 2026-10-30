@@ -20,7 +20,7 @@ Configured from an `export.<name>.module: request-log-file` block. Its `settings
 
 - `path` (required): the JSONL file each request-log line is appended to.
 - `rotate_mb` (optional, MiB): the size at which the file is rotated; absent means never rotate.
-- `keep` (optional, default `9`): how many archives a rotation keeps. The file is renamed to `<path>.1`, older archives shift up to `<path>.9`, and only the oldest is dropped. `keep: 0` truncates the file in place and keeps no archive, as 1.5.5 did. The host applies it (1.6.0 changed the default from 1.5.5's truncation; owner sign-off 2026-10-27, "Keep N, default 9").
+- `keep` (optional, default `9`): how many archives a rotation keeps. The file is renamed to `<path>.1`, older archives shift up to `<path>.9`, and only the oldest is dropped. `keep` is at most `64`; a larger value is refused. `keep: 0` truncates the file in place and keeps no archive, as 1.5.5 did. The host applies it (1.6.0 changed the default from 1.5.5's truncation; owner sign-off 2026-10-27, "Keep N, default 9").
 
 ## Build
 

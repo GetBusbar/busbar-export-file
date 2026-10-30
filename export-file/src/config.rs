@@ -16,8 +16,8 @@ pub struct FileSettings {
     #[serde(default)]
     pub rotate_mb: Option<u64>,
     /// How many archives the host keeps when it rotates the file (`<path>.1` .. `<path>.{keep}`);
-    /// `0` truncates in place. Absent: 9, this sink's declared `keep`. The host reads
-    /// it beside `path`; the sink only checks it.
+    /// `0` truncates in place; at most 64 (`MAX_KEEP`), a larger value is refused. Absent: 9, this
+    /// sink's declared `keep`. The host reads it beside `path`; the sink only checks it.
     #[serde(default)]
     pub keep: Option<u32>,
 }

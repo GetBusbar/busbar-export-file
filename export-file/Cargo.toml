@@ -5,7 +5,7 @@ version = "1.6.0"
 publish = false            # a first-party plugin crate; shipped linked into busbar or as a signed tarball
 edition = "2021"
 rust-version = "1.97"
-description = "The request-log FILE export sink (`module: request-log-file`): appends each request-log line as JSONL, truncating it in place at `rotate_mb` as 1.5.5 did. Every file act is performed by the host on the destination it opened for the operator's configured path; the sink never opens a path."
+description = "The request-log FILE export sink (`module: request-log-file`): appends each request-log line as JSONL, rotating it at `rotate_mb` by rename and keeping 9 archives by default (`keep: 0` truncates in place, as 1.5.5 did). Every file act is performed by the host on the destination it opened for the operator's configured path; the sink never opens a path."
 license = "Apache-2.0"
 
 [lib]
