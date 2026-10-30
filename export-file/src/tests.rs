@@ -63,6 +63,16 @@ fn a_path_the_host_cannot_bind_is_refused() {
     assert_eq!(refused(r#"{"path":"a\u0000b"}"#), want);
 }
 
+/// `rotate_mb: 0` would rotate before every append; core's own grammar refuses it too.
+#[test]
+fn a_zero_rotate_mb_is_refused() {
+    assert_eq!(
+        refused(r#"{"path":"x","rotate_mb":0}"#),
+        "settings: `rotate_mb` must be at least 1"
+    );
+    assert!(FileSink::validate(br#"{"path":"x","rotate_mb":1}"#).is_ok());
+}
+
 /// EFILE-7: a wrong-typed `rotate_mb` is refused in the configuration's own serde words.
 #[test]
 fn a_wrong_typed_rotate_mb_is_refused_in_serde_words() {
