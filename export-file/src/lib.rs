@@ -25,22 +25,18 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod door;
 
 use std::sync::{Arc, PoisonError, RwLock};
 use std::task::Poll;
 
-use busbar_contract::abi::export::{self, CheckIn, CheckOut, DeliverIn, ExportStream, Tail};
+use busbar_contract::abi::export;
 use busbar_contract::abi::host::service::{
     DiskWritten, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED, DISK_ROTATED,
     DISK_SHIFT_FAILED,
 };
-use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
-use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement};
 use busbar_contract::abi::sdk::conn::{ConnFailure, DiskFailure, Host};
-use busbar_contract::abi::sdk::door::{alias, statement};
-use busbar_contract::abi::sdk::export::{tail, NoScrape, NoServe, Quiet};
-use busbar_contract::abi::sdk::life::{settings_as, Held, Life, Refreshed, Refusal};
-use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+use busbar_contract::abi::sdk::life::{settings_as, Life, Refreshed, Refusal};
 use config::FileSettings;
 
 /// The plugin's canonical name.
@@ -75,23 +71,6 @@ pub const RETENTION_FAILED: &str = "BUSBAR-7075";
 pub const SHIFT_FAILED: &str = "BUSBAR-7076";
 /// The catalogue code a rotation raises when renaming the live file to its first archive failed.
 pub const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
-
-/// The streams this sink carries: the request log.
-const STREAMS: &[u8] = &[ExportStream::Logs as u8];
-
-/// The export kind's Statement tail: `logs`, and no route (a push-only sink).
-const TAIL: Tail = tail(STREAMS, &[]);
-
-/// The module name an operator writes, as the alias the registry holds beside [`NAME`].
-const REWRITES: &[Rewrite] = &[alias(ALIAS)];
-
-/// This plugin's Statement: its name, version, in-flight bound, alias and stream.
-pub const STATEMENT: Statement = Statement {
-    kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
-    rewrites: REWRITES.as_ptr(),
-    rewrites_len: REWRITES.len(),
-    ..statement(NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT)
-};
 
 /// The settings, parsed as the configuration grammar parses them (empty is `{}`).
 fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
@@ -259,101 +238,12 @@ const fn no_rotation() -> DiskWritten {
     DiskWritten::ZERO
 }
 
-/// The instance state every slot reads.
-type State = Held<FileSink>;
-
-/// The error texts of the door's REFUSED answers: one per cause, so the host's line names why
-/// instead of a bare outcome.
-pub const NO_INSTANCE: &str = "no opened request-log-file instance";
-/// `check` at a phase this sink does not know.
-pub const UNKNOWN_PHASE: &str = "not a check phase this sink knows (limits or instances)";
-
-/// The (path, `keep`) a delivery's lines name: the pair parked when the append was issued if this is
-/// a resume, else the instance's current pair, so a reload that landed in between is not followed.
-fn issued_at(parked: Option<Box<(Arc<str>, u32)>>, sink: &FileSink) -> (Arc<str>, u32) {
-    parked.map_or_else(|| sink.current(), |p| *p)
-}
-
-/// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
-/// while the host appends; fire-and-forget, so READY whatever became of the line once the host
-/// answered ([`FileSink::settle`] raises what it reported).
-pub struct Deliver;
-
-impl SafeSlot for Deliver {
-    type In = DeliverIn;
-    type Out = OutHead;
-    type State = State;
-    fn call(
-        instance: Instance<'_, State>,
-        input: Lent<'_, DeliverIn>,
-        mut out: Out<'_, OutHead>,
-    ) -> Outcome {
-        let Some(h) = instance.get() else {
-            return out.fail(Refusal::refused(NO_INSTANCE));
-        };
-        // A resumed delivery re-issues the append it parked (the host answers its stored result);
-        // a fresh one appends the batch it was lent.
-        // The batch is the lent `in`, which a resume re-presents from continuation-owned memory, so
-        // it is never copied. What is parked is the path (and its `keep`) the append was issued
-        // against, so the lines a late answer raises name that file, not a reload's new one.
-        let issued_at = issued_at(instance.resume::<(Arc<str>, u32)>(), h.life());
-        let batch: &[u8] = input.field(|i| &i.batch).bytes();
-        match h.life().append(h.host(), instance.ticket(), batch) {
-            Poll::Pending => {
-                instance.park(issued_at);
-                Outcome::Pending
-            }
-            Poll::Ready(Some(answer)) => {
-                h.life().settle_at(&issued_at.0, issued_at.1, &answer);
-                Outcome::Ready
-            }
-            Poll::Ready(None) => Outcome::Ready,
-        }
-    }
-}
-
-/// `check`: no check across instances; each instance's settings are `validate`'s.
-pub struct Check;
-
-impl SafeSlot for Check {
-    type In = CheckIn;
-    type Out = CheckOut;
-    type State = State;
-    fn call(
-        instance: Instance<'_, State>,
-        input: Lent<'_, CheckIn>,
-        mut out: Out<'_, CheckOut>,
-    ) -> Outcome {
-        if instance.get().is_none() {
-            return out.fail(Refusal::refused(NO_INSTANCE));
-        }
-        match input.phase {
-            export::CHECK_PHASE_LIMITS | export::CHECK_PHASE_INSTANCES => Outcome::Ready,
-            // A phase this sink does not know is refused, never run as another.
-            _ => out.fail(Refusal::refused(UNKNOWN_PHASE)),
-        }
-    }
-}
-
-// `scrape` and `serve` are REFUSED, saying why (a push sink carries no `metrics` stream and
-// declares no route); `status` has nothing to report.
-mod table {
-    use super::{Check, Deliver, FileSink, NoScrape, NoServe, Quiet, Safe};
-
-    busbar_contract::plugin_door! {
-        ops: busbar_contract::abi::export::Ops,
-        statement: super::STATEMENT,
-        lifecycle: life(FileSink),
-        kind_ops: {
-            deliver: Safe<Deliver>, scrape: Safe<NoScrape<FileSink>>,
-            status: Safe<Quiet<FileSink>>, check: Safe<Check>, serve: Safe<NoServe<FileSink>>,
-        },
-    }
-}
-
-/// This plugin's door: the one a compiled-in build links and the dropped-in image exports.
-pub use table::{door, MACRO_DOOR};
+pub use door::{door, Check, Deliver, MACRO_DOOR, NO_INSTANCE, STATEMENT, UNKNOWN_PHASE};
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/door_tests.rs"]
+mod door_tests;
