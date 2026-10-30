@@ -143,8 +143,10 @@ impl Life for FileSink {
     /// old ones stay.
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         let parsed = parse(settings)?;
-        *self.issued.write().unwrap_or_else(PoisonError::into_inner) =
-            (parsed.path.into(), parsed.keep.unwrap_or(ROTATE_ARCHIVE_LIMIT));
+        *self.issued.write().unwrap_or_else(PoisonError::into_inner) = (
+            parsed.path.into(),
+            parsed.keep.unwrap_or(ROTATE_ARCHIVE_LIMIT),
+        );
         Ok(Refreshed::default())
     }
 }
