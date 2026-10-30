@@ -386,7 +386,12 @@ fn what_the_sink_raises_is_declared() {
 /// alias, the `logs` stream and no route (a push-only sink).
 #[test]
 fn the_statement_states_the_sink() {
-    assert_eq!(STATEMENT.name.len, NAME.len());
+    assert_eq!(DoorView::of(MACRO_DOOR).name(), NAME);
+    assert_eq!(NAME, "busbar-export-file");
+    assert_eq!(STATEMENT.version.len, env!("CARGO_PKG_VERSION").len());
+    // The kit has no safe reader for the version's bytes (`DoorView::name` reads the name only), and
+    // this crate forbids unsafe: the version is pinned by presence and length.
+    assert!(!STATEMENT.version.is_absent());
     assert_eq!(STATEMENT.max_inflight, 64);
     assert_eq!(STATEMENT.rewrites_len, 1);
     assert_eq!(REWRITES[0].class, REWRITE_ALIAS);
