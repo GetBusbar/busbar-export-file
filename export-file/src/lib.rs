@@ -96,6 +96,9 @@ pub const STATEMENT: Statement = Statement {
 /// The settings, parsed as the configuration grammar parses them (empty is `{}`).
 fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
     let parsed: FileSettings = settings_as(settings)?;
+    if parsed.path.is_empty() || parsed.path.contains('\0') {
+        return Err(Refusal::failed("settings: `path` must name a file"));
+    }
     if parsed.keep.is_some_and(|k| k > MAX_KEEP) {
         return Err(Refusal::failed(format!(
             "settings: `keep` is at most {MAX_KEEP} archives"
