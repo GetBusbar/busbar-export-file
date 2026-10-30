@@ -250,13 +250,7 @@ impl FileSink {
 
 /// A report of no rotation.
 const fn no_rotation() -> DiskWritten {
-    DiskWritten {
-        size: 0,
-        rotated: 0,
-        faults: 0,
-        _reserved: [0; 2],
-        written: 0,
-    }
+    DiskWritten::ZERO
 }
 
 /// The instance state every slot reads.
