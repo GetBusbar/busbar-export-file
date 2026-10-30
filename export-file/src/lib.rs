@@ -99,6 +99,9 @@ fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
     if parsed.path.is_empty() || parsed.path.contains('\0') {
         return Err(Refusal::failed("settings: `path` must name a file"));
     }
+    if parsed.rotate_mb == Some(0) {
+        return Err(Refusal::failed("settings: `rotate_mb` must be at least 1"));
+    }
     if parsed.keep.is_some_and(|k| k > MAX_KEEP) {
         return Err(Refusal::failed(format!(
             "settings: `keep` is at most {MAX_KEEP} archives"
