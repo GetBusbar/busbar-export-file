@@ -1,0 +1,30 @@
+{
+  "settings": { "path": "/var/log/requests.jsonl", "rotate_mb": 1 },
+  "export": {
+    "bad_settings": [
+      { "settings": {}, "refusal": "settings: missing field `path`" },
+      { "settings": { "path": "/x", "rotate": 1 },
+        "refusal": "settings: unknown field `rotate`, expected one of `path`, `rotate_mb`, `keep`" },
+      { "settings": { "path": "/x", "rotate_mb": "one" },
+        "refusal": "settings: invalid type: string \"one\", expected u64" },
+      { "settings": { "path": "" }, "refusal": "settings: `path` must name a file" },
+      { "settings": { "path": "a\u0000b" },
+        "refusal": "settings: `path` must not contain a NUL character" },
+      { "settings": { "path": "/x", "keep": 65 },
+        "refusal": "settings: `keep` is at most 64 archives" },
+      { "settings": { "path": "/x", "keep": -1 },
+        "refusal": "settings: invalid value: integer `-1`, expected u32" }
+    ],
+    "deliver": [
+      { "stream": "logs",
+        "batch": "{\"outcome\":\"ok\",\"ts\":1}\n",
+        "observed": [
+          "request-log file append failed; this log was dropped",
+          "BUSBAR-7073"
+        ] }
+    ],
+    "status": { "outcome": "Ready" },
+    "check": { "outcome": "Ready" },
+    "serve": [ { "method": "GET", "path": "/exports/tail/x", "outcome": "Refused" } ]
+  }
+}

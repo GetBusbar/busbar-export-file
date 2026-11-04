@@ -1,238 +1,255 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The **request-log FILE sink** (`module: request-log-file`, PUSH): each request-log line the host
-//! builds for this instance is appended to a JSONL file, rotated by RENAME at `rotate_mb`.
+//! The **request-log FILE sink** (`module: request-log-file`, PUSH): each request-log batch the host
+//! builds for this instance is appended to a JSONL file.
 //!
-//! A real export sink over the COLD export ABI, served through either door by one registration
-//! (DECISIONS #2 rule (1)): LINKED into the binary ([`linked::EXPORT`]) or DROPPED IN as a signed
-//! tarball whose manifest carries [`DECLARES`] (`busbar-plugin-pack --declares-file declares.json`).
+//! A `kind: export` plugin on the export kind's memory ABI (`busbar_contract::abi::export`): ONE door
+//! ([`door()`], `plugin_door!`), linked in as a compiled-in row or exported by the sibling
+//! `busbar-export-file-plugin` cdylib. Its manifest carries [`DECLARES`] (`busbar-plugin-pack
+//! --declares-file declares.json`): one series, the five catalogue codes and the one destination.
 //!
-//! **The sink never opens a path.** Its manifest declares `path` a DESTINATION (K9a S4): the host
-//! binds the operator's configured path at open, and every append, every rotation (drop the oldest
-//! of [`ROTATE_ARCHIVE_LIMIT`] archives, shift the rest up, rename the live file to `<path>.1`) and
-//! every open is a host act on that handle. The sink says WHAT to write and when to rotate; the host
-//! says what happened, and the sink reports it:
+//! **The sink never opens a path.** Its manifest declares `path` a DESTINATION: the host binds the
+//! operator's configured path, and every append and rotation is a host act on the host's bounded
+//! disk lane (`disk.append`). A delivery hands the batch, unchanged, to `disk.append` under the key
+//! `path`, and the host appends it whole, rotating first when the file already holds `rotate_mb`
+//! MiB. The manifest declares `keep: 9` for `path`, so the host rotates BY RENAME, keeping
+//! `<path>.1` .. `<path>.9` and dropping only the oldest; an operator's `keep` sets N, and
+//! `keep: 0` truncates in place. An append the host could not make drops the batch with the
+//! open-failed ([`OPEN_FAILED`]) or append-failed ([`APPEND_FAILED`]) line, and each failed step of a
+//! rotation has its own declared code.
 //!
-//! - its series — `busbar_file_logs_{rotated,rotate_failed}_total` from its own drain, and
-//!   `busbar_file_logs_dropped_total`, the SHED counter the host counts a delivery it sheds on — are
-//!   declared first-party (K9a S1, K9b) and render as they always did;
-//! - its five `BUSBAR-707x` codes are declared (K9a S3) and join the host's catalogue, and each line
-//!   is raised with the catalogue's `diag` banner field, in the order and words it always was.
-//!
-//! Settings are validated by the sink itself while the host validates the configuration (K9a S2),
-//! with the same serde shape ([`config::FileSettings`]) and so the same words.
+//! Settings are validated by the sink with the same serde shape ([`config::FileSettings`]) the host
+//! validates the configuration with, so the words match.
 
-#![deny(unsafe_code)]
+// Production logic stays safe; unit tests exercise the raw C ABI directly.
+#![cfg_attr(not(test), forbid(unsafe_code))]
 
 pub mod config;
+pub mod door;
 
-use busbar_contract::abi::sdk::{
-    ExportHandler, ExportStream, HostOp, HostResult, HostStep, Observations, PluginMetric, Rotation,
+use std::sync::{Arc, PoisonError, RwLock};
+use std::task::Poll;
+
+use busbar_contract::abi::export;
+use busbar_contract::abi::host::service::{
+    DiskWritten, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED, DISK_ROTATED,
+    DISK_SHIFT_FAILED,
 };
+use busbar_contract::abi::sdk::conn::{ConnFailure, DiskFailure, Host};
+use busbar_contract::abi::sdk::life::{settings_as, Life, Refreshed, Refusal};
 use config::FileSettings;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-/// The row's canonical name.
+/// The plugin's canonical name.
 pub const NAME: &str = "busbar-export-file";
 
-/// The `module:` an operator writes — the frozen 1.5.x module name.
+/// The `module:` an operator writes.
 pub const ALIAS: &str = "request-log-file";
 
-/// What this sink DECLARES to the host (the manifest's `declares` section): its three series, its
-/// five catalogue codes and its one destination. ONE file, stated by both doors — the linked row
-/// reads it here, the packer embeds it (`--declares-file`).
+/// What this sink DECLARES to the host (the manifest's `declares` section): its one series, its
+/// five catalogue codes and its one destination. The packer embeds it (`--declares-file`).
 pub const DECLARES: &str = include_str!("../declares.json");
 
-/// How many rotated archives ONE sink keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) before the
-/// oldest is dropped to make room for a new rotation. A RETENTION policy, not a truncation one: every
-/// rotation preserves the just-completed file in full by renaming it. A compiled-in constant: the
-/// file exporter's config surface is frozen for 1.5.3.
-pub const ROTATE_ARCHIVE_LIMIT: u32 = 9;
+/// How many rotated archives the host keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) when it
+/// rotates a destination by rename and the operator sets no `keep`: the default this sink declares
+/// (`declares.json` `keep.path`), named in the retention-failed line.
+pub const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
+
+/// The most appends one instance holds in flight; past it the host sheds the line and counts the
+/// declared shed counter.
+pub const MAX_INFLIGHT: u32 = 64;
 
 /// The declared destination: the settings key naming the file.
-const DESTINATION: &str = "path";
+pub const DESTINATION: &str = "path";
 
-/// The sink's series, exactly as they render.
-pub const ROTATED_TOTAL: &str = "busbar_file_logs_rotated_total";
-/// See [`ROTATED_TOTAL`].
-pub const ROTATE_FAILED_TOTAL: &str = "busbar_file_logs_rotate_failed_total";
-/// The shed counter — counted by the HOST (the sink never sees a shed delivery).
-pub const DROPPED_TOTAL: &str = "busbar_file_logs_dropped_total";
-
-/// The five catalogue codes this sink raises (declared in [`DECLARES`]).
+/// The catalogue code a dropped line is raised under: writing the opened file failed.
 pub const APPEND_FAILED: &str = "BUSBAR-7073";
-/// See [`APPEND_FAILED`].
+/// The catalogue code a dropped line is raised under: the file could not be opened for the append.
 pub const OPEN_FAILED: &str = "BUSBAR-7074";
-/// See [`APPEND_FAILED`].
+/// The catalogue code a rotation raises when dropping the oldest archive failed.
 pub const RETENTION_FAILED: &str = "BUSBAR-7075";
-/// See [`APPEND_FAILED`].
+/// The catalogue code a rotation raises when shifting an archive up one slot failed.
 pub const SHIFT_FAILED: &str = "BUSBAR-7076";
-/// See [`APPEND_FAILED`].
+/// The catalogue code a rotation raises when renaming the live file to its first archive failed.
 pub const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
 
-/// One opened instance.
-struct FileSink {
-    /// The instance's settings; `None` when they do not parse (validation already refused them, so
-    /// an instance that got this far is never configured that way — it simply writes nothing).
-    settings: Option<FileSettings>,
-    /// Rotations the host performed since the last drain.
-    rotated: AtomicU64,
-    /// Rotations whose final rename failed since the last drain.
-    rotate_failed: AtomicU64,
+/// The most archives the host keeps for one destination: a larger `keep` is refused here rather
+/// than cut short by the host.
+pub const MAX_KEEP: u32 = 64;
+
+/// The settings, parsed as the configuration grammar parses them (empty is `{}`).
+fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
+    let parsed: FileSettings = settings_as(settings)?;
+    if parsed.path.is_empty() {
+        return Err(Refusal::failed("settings: `path` must name a file"));
+    }
+    if parsed.path.contains('\0') {
+        return Err(Refusal::failed(
+            "settings: `path` must not contain a NUL character",
+        ));
+    }
+    if parsed.keep.is_some_and(|k| k > MAX_KEEP) {
+        return Err(Refusal::failed(format!(
+            "settings: `keep` is at most {MAX_KEEP} archives"
+        )));
+    }
+    Ok(parsed)
 }
 
-impl ExportHandler for FileSink {
-    /// `logs`: the request-log line.
-    fn streams(&self) -> Vec<ExportStream> {
-        vec![ExportStream::Logs]
+/// The instance's (path, effective `keep`) from settings that parsed, saying in the instance's log
+/// that `rotate_mb: 0` (accepted, as 1.5.5 accepted it) rotates the file before every append.
+fn issued(parsed: FileSettings) -> (Arc<str>, u32) {
+    if parsed.rotate_mb == Some(0) {
+        tracing::warn!(
+            path = %parsed.path,
+            "request-log file `rotate_mb: 0` rotates the file before every append"
+        );
+    }
+    (
+        parsed.path.into(),
+        parsed.keep.unwrap_or(ROTATE_ARCHIVE_LIMIT),
+    )
+}
+
+/// One opened instance.
+#[derive(Debug)]
+pub struct FileSink {
+    /// The configured path (the only setting the sink itself reads) beside the effective `keep`
+    /// (the operator's, else the declared [`ROTATE_ARCHIVE_LIMIT`]): ONE lock, written once per
+    /// settings, so a reader never pairs one reload's path with another's keep. `open` and
+    /// `refresh` refuse settings that do not parse, so an instance never holds unparsed ones.
+    issued: RwLock<(Arc<str>, u32)>,
+}
+
+impl Life for FileSink {
+    const CANCEL: u32 = export::cancel::ABORTED;
+
+    /// The settings' shape, in the configuration grammar's own serde words.
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        parse(settings).map(|_| ())
     }
 
-    /// Have the host append the line to the destination — rotating first when the file already
-    /// holds `rotate_mb` MiB.
-    fn deliver_via_host(&self, _stream: ExportStream, payload: &serde_json::Value) -> HostStep {
-        let Some(settings) = &self.settings else {
-            return HostStep::Done;
-        };
-        let rotate_at = settings.rotate_mb.map(|mb| mb.saturating_mul(1024 * 1024));
-        let write = HostOp::Write {
-            destination: DESTINATION.to_string(),
-            data: format!("{payload}\n"),
-            rotate_at,
-            keep: ROTATE_ARCHIVE_LIMIT,
-        };
-        HostStep::Host {
-            token: 0,
-            ops: vec![write],
-        }
+    /// Refuses settings that do not parse, in the same words as [`Life::validate`].
+    fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        parse(settings).map(|s| Self {
+            issued: RwLock::new(issued(s)),
+        })
     }
 
-    /// Report what the host did, in the order it did it: the rotation's steps, then the append.
-    fn resume(&self, _token: u64, results: Vec<HostResult>) -> HostStep {
-        let path = self.settings.as_ref().map_or("", |s| s.path.as_str());
-        for result in results {
-            match result {
-                HostResult::Done { rotation } => self.rotation(path, rotation),
-                HostResult::Failed {
-                    step,
-                    error,
-                    rotation,
-                } => {
-                    self.rotation(path, rotation);
-                    match step.as_str() {
-                        "append" => {
-                            tracing::warn!(diag = %APPEND_FAILED, path = %path, error = %error, "request-log file append failed; this log was dropped")
-                        }
-                        _ => {
-                            tracing::warn!(diag = %OPEN_FAILED, path = %path, error = %error, "request-log file open failed; this log was dropped")
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        HostStep::Done
-    }
-
-    /// The instance's settings, parsed as the configuration grammar parses them — the error, when
-    /// there is one, is the line the host has always reported.
-    fn validate(&self, instance: &str, settings: &serde_json::Value) -> Vec<String> {
-        match serde_json::from_value::<FileSettings>(settings.clone()) {
-            Ok(_) => Vec::new(),
-            Err(e) => vec![format!("export.{instance}.settings: {e}")],
-        }
-    }
-
-    /// Hand over the rotations since the last drain and reset (a counter is folded as a delta).
-    fn drain_observations(&self) -> Observations {
-        let mut observed = Observations::none();
-        for (series, counter) in [
-            (ROTATED_TOTAL, &self.rotated),
-            (ROTATE_FAILED_TOTAL, &self.rotate_failed),
-        ] {
-            let n = counter.swap(0, Relaxed);
-            if n > 0 {
-                observed = observed.metric(PluginMetric::counter(series, n as f64));
-            }
-        }
-        observed
+    /// A reload's settings replace the instance's; settings that do not parse are refused and the
+    /// old ones stay.
+    fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        let pair = issued(parse(settings)?);
+        *self.issued.write().unwrap_or_else(PoisonError::into_inner) = pair;
+        Ok(Refreshed::default())
     }
 }
 
 impl FileSink {
-    /// The lines and counts one rotation the host ran is owed: each failed step as it failed —
-    /// retention, then each shift, then the final rename — and then, when the live file WAS
-    /// renamed, the rotation itself.
-    fn rotation(&self, path: &str, rotation: Option<Rotation>) {
-        let Some(r) = rotation else {
-            return;
-        };
-        for f in &r.faults {
-            let (from, to, error) = (&f.from, f.to.as_deref().unwrap_or(""), &f.error);
-            match f.step.as_str() {
-                "retention" => tracing::warn!(
-                    diag = %RETENTION_FAILED,
-                    archive = %from, error = %error,
-                    "request-log archive retention cleanup failed; the archive series may exceed ROTATE_ARCHIVE_LIMIT"
-                ),
-                "shift" => tracing::warn!(
-                    diag = %SHIFT_FAILED,
-                    from = %from, to = %to, error = %error,
-                    "request-log archive shift failed; older archive left in place rather than lost"
-                ),
-                _ => {
-                    tracing::warn!(
-                        diag = %ROTATE_RENAME_FAILED,
-                        path = %from, error = %error,
-                        "request-log file rotation rename failed; continuing to APPEND to the current file \
-                         rather than truncate it, so no recorded data is lost — the file will exceed rotate_mb \
-                         until this is resolved"
-                    );
-                    self.rotate_failed.fetch_add(1, Relaxed);
-                }
-            }
+    /// The configured path.
+    pub fn path(&self) -> Arc<str> {
+        self.current().0
+    }
+
+    /// The configured (path, `keep`), read together under one lock.
+    pub fn current(&self) -> (Arc<str>, u32) {
+        let g = self.issued.read().unwrap_or_else(PoisonError::into_inner);
+        (Arc::clone(&g.0), g.1)
+    }
+
+    /// The effective `keep`: how many archives the host keeps beside the path.
+    pub fn keep(&self) -> u32 {
+        self.current().1
+    }
+
+    /// Have the host append `batch` (JSON lines, unchanged) to the destination on `host`'s disk
+    /// lane, under the op running on `ticket`: what [`Connector::disk_append`] answered. An empty
+    /// batch appends nothing and answers at once.
+    ///
+    /// [`Connector::disk_append`]: busbar_contract::abi::sdk::conn::Connector::disk_append
+    pub fn append(
+        &self,
+        host: Option<&Host>,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        batch: &[u8],
+    ) -> Poll<Option<Result<DiskWritten, DiskFailure>>> {
+        if batch.is_empty() {
+            return Poll::Ready(None);
         }
-        if r.renamed {
-            tracing::info!(path = %path, archive = %r.archive, "request-log file rotated by rename");
-            self.rotated.fetch_add(1, Relaxed);
+        let Some(host) = host else {
+            return Poll::Ready(Some(Err(DiskFailure {
+                step: 0,
+                rotation: DiskWritten::ZERO,
+                why: ConnFailure::Unarmed,
+            })));
+        };
+        host.connector(ticket)
+            .disk_append(DESTINATION, batch)
+            .map(Some)
+    }
+
+    /// Raise what the host reported for one append, in the order it happened: each failed step of
+    /// the rotation that ran before it, the rotation itself, then — when the batch did not land —
+    /// the line that says it was dropped.
+    pub fn settle(&self, answer: &Result<DiskWritten, DiskFailure>) {
+        let (path, keep) = self.current();
+        self.settle_at(&path, keep, answer);
+    }
+
+    /// [`FileSink::settle`] naming `path`: the file the append was issued against, which a reload
+    /// that landed while the append was pending may have replaced in the settings, and the `keep`
+    /// that was in force with it.
+    pub fn settle_at(&self, path: &str, keep: u32, answer: &Result<DiskWritten, DiskFailure>) {
+        let rotation = match answer {
+            Ok(w) => *w,
+            Err(f) => f.rotation,
+        };
+        if rotation.faults & DISK_RETENTION_FAILED != 0 {
+            tracing::warn!(
+                diag = %RETENTION_FAILED,
+                archive = %format!("{path}.{keep}"),
+                "request-log archive retention cleanup failed; the archive series may exceed its `keep` limit"
+            );
+        }
+        if rotation.faults & DISK_SHIFT_FAILED != 0 {
+            tracing::warn!(
+                diag = %SHIFT_FAILED,
+                path = %path,
+                "request-log archive shift failed; older archive left in place rather than lost"
+            );
+        }
+        if rotation.faults & DISK_RENAME_FAILED != 0 {
+            tracing::warn!(
+                diag = %ROTATE_RENAME_FAILED,
+                path = %path,
+                "request-log file rotation rename failed; continuing to APPEND to the current file \
+                 rather than truncate it, so no recorded data is lost — the file will exceed rotate_mb \
+                 until this is resolved"
+            );
+        }
+        if rotation.rotated == DISK_ROTATED {
+            tracing::info!(path = %path, archive = %format!("{path}.1"), "request-log file rotated by rename");
+        }
+        match answer {
+            Ok(_) => {}
+
+            Err(f) if f.step == DISK_OPEN_FAILED => {
+                tracing::warn!(diag = %OPEN_FAILED, path = %path, error = %f.why, "request-log file open failed; this log was dropped");
+            }
+
+            Err(f) => {
+                tracing::warn!(diag = %APPEND_FAILED, path = %path, error = %f.why, "request-log file append failed; this log was dropped");
+            }
         }
     }
 }
 
-/// Open one instance over its settings (JSON text). Never refuses: the settings were validated with
-/// the configuration, and an instance whose settings do not parse writes nothing.
-///
-/// `pub` so a test can drive exactly the handler the `cdylib`'s `busbar_open` constructs.
-pub fn open(cfg: &str) -> Result<Box<dyn ExportHandler>, String> {
-    Ok(Box::new(FileSink {
-        settings: serde_json::from_str(cfg).ok(),
-        rotated: AtomicU64::new(0),
-        rotate_failed: AtomicU64::new(0),
-    }))
-}
-
-busbar_contract::abi::sdk::export_export_plugin!(open);
-
-/// THE COMPILED-IN ENTRY POINT — the same op-dispatch `busbar_call` runs, envelope included.
-pub fn dispatch_compiled_in(
-    handler: &dyn ExportHandler,
-    req: busbar_contract::abi::sdk::ExportRequest,
-) -> busbar_contract::abi::sdk::Envelope<busbar_contract::abi::sdk::ExportResponse> {
-    busbar_contract::abi::sdk::dispatch_export_enveloped(handler, req)
-}
-
-/// THE LINKED DOOR's entry: what the composition root's `exports` axis reads for this crate.
-pub mod linked {
-    /// `(name, alias, declares, boundary)` — the row's statement and the boundary the one cold
-    /// load runs over, exactly what the dropped-in tarball states and exports.
-    pub const EXPORT: (&str, &str, &str, &busbar_contract::abi::sdk::ColdEntry) = (
-        super::NAME,
-        super::ALIAS,
-        super::DECLARES,
-        &super::BUSBAR_COLD_ENTRY,
-    );
-}
+pub use door::{door, Check, Deliver, MACRO_DOOR, NO_INSTANCE, STATEMENT, UNKNOWN_PHASE};
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/door_tests.rs"]
+mod door_tests;
