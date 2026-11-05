@@ -5,6 +5,9 @@
 //! what its Statement states. The door over the real loader, linked and dropped in, is the plugin
 //! crate's `tests/conformance.rs`.
 
+#[path = "../../../testing/settings/integer_token.rs"]
+mod settings_profile;
+
 use super::*;
 use crate::door::issued_at;
 use busbar_contract::abi::mechanism::call::Outcome;
@@ -477,4 +480,121 @@ fn a_reload_replaces_an_explicit_keep_and_can_restore_the_default() {
     s.refresh(br#"{"path":"/a.jsonl"}"#, &[], 5)
         .expect("omitting keep restores the default");
     assert_eq!(s.keep(), 9);
+}
+
+/// The linked door advertises the settings accepted by the production lifecycle, including
+/// nullable options, the u64 rotation limit and the sink's path/retention checks.
+#[test]
+#[allow(unsafe_code)]
+fn settings_schema_matches_lifecycle() {
+    use busbar_contract::abi::mechanism::{call::BLOB_JSON, door::Door};
+    // SAFETY: the linked door and its Statement/schema are static program data.
+    let statement = unsafe { &*Door::read_parts(crate::door::door()).statement };
+    let blob = &statement.settings_schema;
+    assert_eq!(blob.fmt, BLOB_JSON);
+    assert_eq!(blob.flags, 0);
+    assert!(!blob.ptr.is_null());
+    // SAFETY: this is the immutable schema published by the linked door above.
+    let bytes = unsafe { std::slice::from_raw_parts(blob.ptr, blob.len) };
+    assert_eq!(bytes, include_bytes!("../../settings.schema.json"));
+    let schema: serde_json::Value = serde_json::from_slice(bytes).expect("schema JSON");
+    let validator = settings_profile::validator(&schema).expect("valid JSON Schema");
+
+    use serde_json::json;
+    for (settings, accepted) in [
+        (json!({"path":"/logs/requests.jsonl"}), true),
+        (json!({"path":"x", "rotate_mb":null, "keep":null}), true),
+        (json!({"path":"x", "rotate_mb":0, "keep":0}), true),
+        (
+            json!({"path":"x", "rotate_mb":u64::MAX, "keep":MAX_KEEP}),
+            true,
+        ),
+        (json!({}), false),
+        (json!({"path":""}), false),
+        (json!({"path":"a\u{0}b"}), false),
+        (json!({"path":null}), false),
+        (json!({"path":"x", "keep":MAX_KEEP + 1}), false),
+        (json!({"path":"x", "rotate_mb":-1}), false),
+        (json!({"path":"x", "rotate_mb":"1"}), false),
+        (json!({"path":"x", "extra":true}), false),
+    ] {
+        assert_eq!(
+            validator.is_valid(&settings),
+            accepted,
+            "schema: {settings}"
+        );
+        assert_eq!(
+            FileSink::validate(settings.to_string().as_bytes()).is_ok(),
+            accepted,
+            "lifecycle: {settings}"
+        );
+    }
+    let defaults = FileSink::open(br#"{"path":"x"}"#, &[], 1).expect("defaults open");
+    assert_eq!(schema["properties"]["keep"]["default"], defaults.keep());
+}
+
+#[test]
+fn settings_schema_integer_tokens_match_native_parser() {
+    let schema: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../../settings.schema.json")).unwrap();
+    let profile = settings_profile::validator(&schema).unwrap();
+    let standard = jsonschema::validator_for(&schema).unwrap();
+    assert_eq!(schema["x-busbar-settings-profile"], "integer-token-v1");
+    for (pointer, template, integer, kind) in [
+        (
+            r#"/properties/rotate_mb"#,
+            r#"{"path":"x","rotate_mb":TOKEN}"#,
+            "1",
+            "unsigned",
+        ),
+        (
+            r#"/properties/keep"#,
+            r#"{"path":"x","keep":TOKEN}"#,
+            "1",
+            "unsigned",
+        ),
+    ] {
+        assert_eq!(
+            schema.pointer(pointer).unwrap()["x-busbar-integer-token"],
+            kind
+        );
+        for (token, accepted) in [
+            (integer.to_string(), true),
+            (format!("{integer}.0"), false),
+            (format!("{integer}e0"), false),
+            (format!("{integer}E+0"), false),
+        ] {
+            let text = template.replace("TOKEN", &token);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert!(
+                standard.is_valid(&value),
+                "standard mathematical integer: {text}"
+            );
+            assert_eq!(profile.is_valid(&value), accepted, "profile: {text}");
+            assert_eq!(
+                FileSink::validate(text.as_bytes()).is_ok(),
+                accepted,
+                "native: {text}"
+            );
+        }
+        // Do not infer signed negative-zero behavior from a regular expression:
+        // the profile must agree with the actual lifecycle parser.
+        for token in [
+            "null",
+            "0",
+            "-0",
+            "-0.0",
+            "0e0",
+            "-1",
+            "18446744073709551616",
+        ] {
+            let text = template.replace("TOKEN", token);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(
+                profile.is_valid(&value),
+                FileSink::validate(text.as_bytes()).is_ok(),
+                "native sign/range: {text}"
+            );
+        }
+    }
 }

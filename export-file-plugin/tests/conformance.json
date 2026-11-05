@@ -13,7 +13,7 @@
       { "settings": { "path": "/x", "keep": 65 },
         "refusal": "settings: `keep` is at most 64 archives" },
       { "settings": { "path": "/x", "keep": -1 },
-        "refusal": "settings: invalid value: integer `-1`, expected u32" }
+        "refusal": "settings: invalid number" }
     ],
     "deliver": [
       { "stream": "logs",

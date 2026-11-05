@@ -151,11 +151,21 @@ fn run(dropped: bool) -> Vec<(String, String)> {
         input.err_buf = err.as_mut_ptr();
         input.err_cap = err.len();
         let c = p.call(slot::VALIDATE, &mut Frame::new(input, out_head()));
-        assert_eq!(c.outcome, Outcome::Failed);
-        assert_eq!(c.lease, 0);
+        let route = if dropped { "dropped-in" } else { "linked" };
+        let expected = bad["refusal"].as_str().expect("fixture refusal text");
+        assert_eq!(
+            c.outcome,
+            Outcome::Failed,
+            "{route} bad settings #{i}: {}",
+            answer(&c)
+        );
+        assert_eq!(c.lease, 0, "{route} bad settings #{i}: {}", answer(&c));
+        let actual = String::from_utf8_lossy(c.error.as_ref().unwrap_or_else(|| {
+            panic!("{route} bad settings #{i}: missing refusal text; expected {expected:?}")
+        }));
         assert!(
-            String::from_utf8_lossy(c.error.as_ref().expect("refusal text"))
-                .contains(bad["refusal"].as_str().unwrap())
+            actual.contains(expected),
+            "{route} bad settings #{i}: expected refusal substring {expected:?}, actual {actual:?}"
         );
         record(&format!("validate bad {i}"), 1, answer(&c));
     }

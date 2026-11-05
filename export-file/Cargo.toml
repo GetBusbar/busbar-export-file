@@ -29,6 +29,7 @@ serde = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+jsonschema = { workspace = true }
 # Builds the tests' settings and reads `declares.json`: tests only, so no shipped image carries it.
 serde_json = { workspace = true }
 

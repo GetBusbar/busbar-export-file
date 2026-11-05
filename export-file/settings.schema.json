@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "request-log-file settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "path"
+  ],
+  "properties": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "description": "JSONL destination path, required, nonempty and without NUL characters."
+    },
+    "rotate_mb": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "default": null,
+      "description": "Rotate at this size in MiB; absent or null never rotates. Zero rotates before every append.",
+      "x-busbar-integer-token": "unsigned"
+    },
+    "keep": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 64,
+      "default": 9,
+      "description": "Archives retained by the host; absent or null uses 9, zero truncates in place.",
+      "x-busbar-integer-token": "unsigned"
+    }
+  },
+  "x-busbar-settings-profile": "integer-token-v1"
+}

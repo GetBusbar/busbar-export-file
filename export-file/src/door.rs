@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use busbar_contract::abi::export::{self, CheckIn, CheckOut, DeliverIn, ExportStream, Tail};
-use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement};
 use busbar_contract::abi::sdk::door::{alias, statement};
 use busbar_contract::abi::sdk::export::{tail, NoScrape, NoServe, Quiet};
@@ -29,6 +29,7 @@ pub(crate) const REWRITES: &[Rewrite] = &[alias(ALIAS)];
 
 /// This plugin's Statement: its name, version, in-flight bound, alias and stream.
 pub const STATEMENT: Statement = Statement {
+    settings_schema: Blob::json(include_bytes!("../settings.schema.json")),
     kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
     rewrites: REWRITES.as_ptr(),
     rewrites_len: REWRITES.len(),
