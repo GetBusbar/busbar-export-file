@@ -227,6 +227,8 @@ fn pending_delivery_borrows_its_batch_and_keeps_its_original_destination() {
             cancel.ticket = TICKET;
             let mut cancelled: CancelOut = blank_out();
             cancelled.head.size = size_of::<CancelOut>() as u32;
+            // Not ABORTED (0) until the plugin writes it.
+            cancelled.disposition = u32::MAX;
             assert_eq!(
                 // SAFETY: the live instance owns this pending ticket; both typed frames are live.
                 unsafe {
@@ -239,6 +241,8 @@ fn pending_delivery_borrows_its_batch_and_keeps_its_original_destination() {
                 .outcome(),
                 Outcome::Ready
             );
+            // A cancelled delivery never landed: the host is told it was aborted.
+            assert_eq!(cancelled.disposition, export::cancel::ABORTED);
         } else if end != 3 {
             assert_eq!(
                 // SAFETY: the pending ticket and original typed loans remain live for completion.

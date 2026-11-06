@@ -390,7 +390,9 @@ fn restate(parts: busbar_contract::abi::mechanism::door::DoorParts) {
 }
 #[test]
 fn another_kind_abi_or_layout_is_refused() {
-    let _guard = RED_LOCK.lock().unwrap();
+    let _guard = RED_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     use busbar_contract::abi::mechanism::{door::Door, KindCode};
     use busbar_plugin_loader::dispatch::LoadError;
     // SAFETY: real static linked file door.
@@ -446,7 +448,9 @@ fn another_kind_abi_or_layout_is_refused() {
 }
 #[test]
 fn another_statement_is_refused_by_both_loaders() {
-    let _guard = RED_LOCK.lock().unwrap();
+    let _guard = RED_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     use busbar_contract::abi::mechanism::door::{Door, DoorParts, Statement};
     use busbar_plugin_loader::dispatch::LoadError;
     let real = unsafe { Door::read_parts(busbar_export_file::door()) };

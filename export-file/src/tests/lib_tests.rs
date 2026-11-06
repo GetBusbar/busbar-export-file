@@ -40,6 +40,8 @@ fn settings_are_validated_in_the_configurations_words() {
 fn the_sink_keeps_nine_archives_unless_the_operator_says_otherwise() {
     let d: serde_json::Value = serde_json::from_str(DECLARES).unwrap();
     assert_eq!(d["keep"], serde_json::json!({ "path": 9 }));
+    // The keep the host applies (declared) is the keep the sink's lines name when none is set.
+    assert_eq!(d["keep"]["path"], ROTATE_ARCHIVE_LIMIT);
     for keep in [0, 1, 9, MAX_KEEP] {
         let s = format!(r#"{{"path":"/x","rotate_mb":1,"keep":{keep}}}"#);
         assert!(FileSink::validate(s.as_bytes()).is_ok(), "keep {keep}");
@@ -67,6 +69,21 @@ fn a_path_the_host_cannot_bind_is_refused() {
         refused(r#"{"path":"a\u0000b"}"#),
         "settings: `path` must not contain a NUL character"
     );
+}
+
+/// `open` refuses exactly what `validate` refuses, in the same words: an instance never opens on
+/// a path the host cannot bind or on more archives than the host keeps.
+#[test]
+fn open_refuses_what_validate_refuses() {
+    for settings in [
+        r#"{"path":""}"#,
+        r#"{"path":"a\u0000b"}"#,
+        r#"{"path":"/x","keep":65}"#,
+    ] {
+        let r = FileSink::open(settings.as_bytes(), &[], 1).expect_err(settings);
+        assert_eq!(r.outcome(), Outcome::Failed, "{settings}");
+        assert_eq!(r.text(), Some(refused(settings).as_str()), "{settings}");
+    }
 }
 
 /// `rotate_mb: 0` is accepted as 1.5.5 accepted it (it rotates before every append), and an
@@ -455,7 +472,7 @@ fn a_resumed_delivery_settles_against_the_pair_it_parked() {
     assert_eq!((&*parked.0, parked.1), ("/a.jsonl", 3));
     s.refresh(br#"{"path":"/b.jsonl"}"#, &[], 2)
         .expect("a refresh applies");
-    let resumed = issued_at(Some(Box::new(parked)), &s);
+    let resumed = issued_at(Some(parked), &s);
     assert_eq!((&*resumed.0, resumed.1), ("/a.jsonl", 3));
     let fresh = issued_at(None, &s);
     assert_eq!((&*fresh.0, fresh.1), ("/b.jsonl", ROTATE_ARCHIVE_LIMIT));

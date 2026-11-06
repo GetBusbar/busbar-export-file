@@ -6,14 +6,18 @@ pub fn cdylib() -> std::path::PathBuf {
         assert!(path.is_absolute(), "BUSBAR_PLUGIN_CDYLIB must be absolute");
         path
     } else {
+        // The test executable sits in `<profile>/deps/`, beside the cdylib `cargo test` builds for
+        // this crate's dropped-in dev-dependency (README); that one is this run's build, so it wins
+        // over one an explicit `cargo build` uplifted into `<profile>/` earlier.
         let exe = std::env::current_exe().expect("test executable path");
-        let profile = exe
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("target profile directory");
-        profile.join(busbar_plugin_loader::plugin_library_filename(
-            "busbar_export_file_plugin",
-        ))
+        let deps = exe.parent().expect("test executable directory");
+        let name = busbar_plugin_loader::plugin_library_filename("busbar_export_file_plugin");
+        let built = deps.join(&name);
+        if built.is_file() {
+            built
+        } else {
+            deps.parent().expect("target profile directory").join(name)
+        }
     };
     assert!(
         path.is_file(),

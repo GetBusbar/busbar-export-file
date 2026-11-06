@@ -47,8 +47,8 @@ pub const UNKNOWN_PHASE: &str = "not a check phase this sink knows (limits or in
 
 /// The (path, `keep`) a delivery's lines name: the pair parked when the append was issued if this is
 /// a resume, else the instance's current pair, so a reload that landed in between is not followed.
-pub(crate) fn issued_at(parked: Option<Box<(Arc<str>, u32)>>, sink: &FileSink) -> (Arc<str>, u32) {
-    parked.map_or_else(|| sink.current(), |p| *p)
+pub(crate) fn issued_at(parked: Option<(Arc<str>, u32)>, sink: &FileSink) -> (Arc<str>, u32) {
+    parked.unwrap_or_else(|| sink.current())
 }
 
 /// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
@@ -69,7 +69,7 @@ impl SafeSlot for Deliver {
             return out.fail(Refusal::refused(NO_INSTANCE));
         };
 
-        let issued_at = issued_at(instance.resume::<(Arc<str>, u32)>(), h.life());
+        let issued_at = issued_at(instance.resume_value::<(Arc<str>, u32)>(), h.life());
         let batch: &[u8] = input.field(|i| &i.batch).bytes();
         match h.life().append(h.host(), instance.ticket(), batch) {
             Poll::Pending => {
