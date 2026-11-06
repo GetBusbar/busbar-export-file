@@ -48,10 +48,11 @@ fn the_sink_keeps_nine_archives_unless_the_operator_says_otherwise() {
         refused(r#"{"path":"/x","keep":65}"#),
         "settings: `keep` is at most 64 archives"
     );
-    assert_eq!(
-        refused(r#"{"path":"/x","keep":-1}"#),
-        "settings: invalid value: integer `-1`, expected u32"
-    );
+    // The SDK reads through an arbitrary-precision Value before the unsigned field.
+    for token in ["-1", "4294967296"] {
+        let settings = format!(r#"{{"path":"/x","keep":{token}}}"#);
+        assert_eq!(refused(&settings), "settings: invalid number", "{token}");
+    }
 }
 
 /// A path the host can never bind (empty, or holding a NUL) is refused at settings time, each in
@@ -100,10 +101,11 @@ fn a_zero_rotate_mb_is_accepted_and_says_so() {
 
 #[test]
 fn a_wrong_typed_rotate_mb_is_refused_in_serde_words() {
-    assert_eq!(
-        refused(r#"{"path":"/x","rotate_mb":-1}"#),
-        "settings: invalid value: integer `-1`, expected u64"
-    );
+    // Negative and overflowing numbers remain refusals with the SDK's exact diagnostic.
+    for token in ["-1", "18446744073709551616"] {
+        let settings = format!(r#"{{"path":"/x","rotate_mb":{token}}}"#);
+        assert_eq!(refused(&settings), "settings: invalid number", "{token}");
+    }
     assert_eq!(
         refused(r#"{"path":"/x","rotate_mb":"one"}"#),
         "settings: invalid type: string \"one\", expected u64"
