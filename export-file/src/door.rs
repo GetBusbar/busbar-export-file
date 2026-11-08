@@ -54,14 +54,15 @@ pub(crate) fn issued_at(parked: Option<(Arc<str>, u32)>, sink: &FileSink) -> (Ar
 /// `deliver`: the batch appended through the host's disk lane ([`FileSink::append`]), pending
 /// while the host appends; fire-and-forget, so READY whatever became of the line once the host
 /// answered ([`FileSink::settle_at`] raises what it reported, against the issued-at path).
-pub struct Deliver;
+pub(crate) struct Deliver;
 
 impl SafeSlot for Deliver {
+    type Kind = busbar_contract::plugin::markers::ExportKind;
     type In = DeliverIn;
     type Out = OutHead;
     type State = State;
     fn call(
-        instance: Instance<'_, State>,
+        instance: Instance<'_, State, busbar_contract::plugin::markers::ExportKind>,
         input: Lent<'_, DeliverIn>,
         mut out: Out<'_, OutHead>,
     ) -> Outcome {
@@ -86,14 +87,15 @@ impl SafeSlot for Deliver {
 }
 
 /// `check`: no check across instances; each instance's settings are `validate`'s.
-pub struct Check;
+pub(crate) struct Check;
 
 impl SafeSlot for Check {
+    type Kind = busbar_contract::plugin::markers::ExportKind;
     type In = CheckIn;
     type Out = CheckOut;
     type State = State;
     fn call(
-        instance: Instance<'_, State>,
+        instance: Instance<'_, State, busbar_contract::plugin::markers::ExportKind>,
         input: Lent<'_, CheckIn>,
         mut out: Out<'_, CheckOut>,
     ) -> Outcome {

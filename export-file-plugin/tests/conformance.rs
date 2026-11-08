@@ -16,7 +16,6 @@ use busbar_plugin_loader::dispatch::{
     in_head, load_dropped, load_linked, out_head, Bind, Called, ConnTable, Diagnostic,
     DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, LinkedRow, Metric, Plugin,
 };
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -105,7 +104,10 @@ fn run(dropped: bool) -> Vec<(String, String)> {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("conformance.json")).unwrap();
     let settings = serde_json::to_vec(&fixture["settings"]).unwrap();
-    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let tape = Arc::new(Tape::default());
     let row = LinkedRow::of(busbar_export_file::door).unwrap();
     let bind = Bind {
@@ -121,10 +123,9 @@ fn run(dropped: bool) -> Vec<(String, String)> {
         load_linked::<Export>(&row, bind).unwrap()
     };
     let mut fold = Vec::new();
-    let mut previous =
-        p.inner.crossings.load(Ordering::SeqCst) - p.inner.resumes.load(Ordering::SeqCst);
+    let mut previous = p.test_invocations().0 - p.test_invocations().1;
     let mut record = |label: &str, pin: u64, line: String| {
-        let now = p.inner.crossings.load(Ordering::SeqCst) - p.inner.resumes.load(Ordering::SeqCst);
+        let now = p.test_invocations().0 - p.test_invocations().1;
         assert_eq!(now - previous, pin, "{label}");
         previous = now;
         let host = std::mem::take(&mut *tape.0.lock().unwrap());
@@ -393,14 +394,17 @@ fn another_kind_abi_or_layout_is_refused() {
     let _guard = RED_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    use busbar_contract::abi::mechanism::{door::Door, KindCode};
+    use busbar_contract::abi::mechanism::KindCode;
     use busbar_plugin_loader::dispatch::LoadError;
     // SAFETY: real static linked file door.
-    let real = unsafe { Door::read_parts(busbar_export_file::door()) };
+    let real = busbar_export_file::door().parts();
     let kind = KindCode::Export;
     assert_eq!(real.kind_abi, kind.abi_version());
     assert_eq!(real.layout, kind.layout_fingerprint());
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     for abi in [real.kind_abi + 1, real.kind_abi.wrapping_sub(1)] {
         restate(busbar_contract::abi::mechanism::door::DoorParts {
             kind_abi: abi,
@@ -451,9 +455,9 @@ fn another_statement_is_refused_by_both_loaders() {
     let _guard = RED_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    use busbar_contract::abi::mechanism::door::{Door, DoorParts, Statement};
+    use busbar_contract::abi::mechanism::door::{DoorParts, Statement};
     use busbar_plugin_loader::dispatch::LoadError;
-    let real = unsafe { Door::read_parts(busbar_export_file::door()) };
+    let real = busbar_export_file::door().parts();
     let statement = Box::leak(Box::new(Statement {
         version: text("0.0.0-file-red"),
         ..unsafe { *real.statement }
@@ -462,7 +466,10 @@ fn another_statement_is_refused_by_both_loaders() {
     let honest = LinkedRow::of(busbar_export_file::door).unwrap();
     let other = LinkedRow::of_raw(red_door).unwrap();
     assert_ne!(honest.statement, other.statement);
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let row = LinkedRow {
         statement: other.statement.clone(),
         door: honest.door,
@@ -489,7 +496,10 @@ fn every_other_kind_refuses_the_file_door() {
     use busbar_plugin_loader::dispatch::{Kind, LoadError};
     fn refuse<K: Kind>() {
         let row = LinkedRow::of(busbar_export_file::door).unwrap();
-        let d = Dispatcher::new(DispatchConfig::default());
+        let d = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let want = LoadError::ManifestKind {
             stated: busbar_contract::abi::mechanism::KindCode::Export,
             want: K::CODE,
@@ -501,7 +511,8 @@ fn every_other_kind_refuses_the_file_door() {
         );
     }
     use busbar_plugin_loader::dispatch::kinds::{
-        auth::Auth, hook::Hook, plane::Plane, secret::Secret, store::Store, transport::Transport,
+        auth::Auth, hook::Hook, plane::Plane, secret::Secret, store_v4::StoreV4 as Store,
+        transport::Transport,
     };
     refuse::<Auth>();
     refuse::<Hook>();

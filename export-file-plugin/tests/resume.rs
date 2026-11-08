@@ -16,8 +16,7 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as lc, RefreshIn};
 use busbar_contract::abi::sdk::door::blank_in;
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_contract::services::{
-    Caller, HookAsk, HostServices, NestAsk, Reading, RecordsList, Snapshot, Stored, TrustKeyRef,
-    UNSERVED,
+    Caller, HookAsk, HostServices, NestAsk, Reading, RecordsList, Stored, TrustKeyRef, UNSERVED,
 };
 use busbar_contract::services::{DiskDest, DiskReport, Later, Ran};
 use busbar_plugin_loader::dispatch::kinds::export::Export;
@@ -85,17 +84,20 @@ impl HostServices for Held {
         _counterparty: &str,
         _item: &str,
         _digest: &str,
-    ) -> Stored {
-        Stored::refused(UNSERVED)
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(UNSERVED))
     }
     fn trust_decide(
         &self,
         _caller: &Caller,
+        _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         _key: TrustKeyRef<'_>,
         _expected: Option<&str>,
         _approve: bool,
-    ) -> Stored {
-        Stored::refused(UNSERVED)
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(UNSERVED))
     }
     fn trust_state(&self, _caller: &Caller, _counterparty: &str) -> Stored {
         Stored::refused(UNSERVED)
@@ -133,8 +135,9 @@ impl HostServices for Held {
         _unit: Option<u64>,
         _ttl_secs: u64,
         _record: &[u8],
-    ) -> Stored {
-        Stored::refused(UNSERVED)
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(UNSERVED))
     }
     fn ticket_take(&self, _caller: &Caller, _unit: Option<u64>) -> Stored {
         Stored::refused(UNSERVED)
@@ -204,8 +207,8 @@ impl HostServices for Held {
     fn hook_call(&self, _caller: &Caller, _unit: Option<u64>, _ask: HookAsk, _later: Later) -> Ran {
         Ran::Now(Stored::refused(UNSERVED))
     }
-    fn snapshot_read(&self, _caller: &Caller, _scope: u32) -> Snapshot {
-        Snapshot::Refused(UNSERVED)
+    fn snapshot_read(&self, _caller: &Caller, _scope: u32, _later: Later) -> Ran {
+        Ran::Now(Stored::refused(UNSERVED))
     }
     fn disk_append(&self, dest: &DiskDest, _: Vec<u8>, later: Later) -> Ran {
         self.held
@@ -245,6 +248,7 @@ fn run(dropped: bool) {
     let d = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         lane.clone(),
+        busbar_contract::services::test_caller_binding(),
     ));
     let row = LinkedRow::of(busbar_export_file::door).expect("the linked door renders");
     let bind = Bind {

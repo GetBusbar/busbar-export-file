@@ -25,8 +25,8 @@
 // Production logic stays safe; unit tests exercise the raw C ABI directly.
 #![cfg_attr(not(test), forbid(unsafe_code))]
 
-pub mod config;
-pub mod door;
+pub(crate) mod config;
+pub(crate) mod door;
 
 use std::sync::{Arc, PoisonError, RwLock};
 use std::task::Poll;
@@ -53,29 +53,29 @@ pub const DECLARES: &str = include_str!("../declares.json");
 /// How many rotated archives the host keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) when it
 /// rotates a destination by rename and the operator sets no `keep`: the default this sink declares
 /// (`declares.json` `keep.path`), named in the retention-failed line.
-pub const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
+pub(crate) const ROTATE_ARCHIVE_LIMIT: u32 = busbar_contract::services::DISK_KEEP;
 
 /// The most appends one instance holds in flight; past it the host sheds the line and counts the
 /// declared shed counter.
-pub const MAX_INFLIGHT: u32 = 64;
+pub(crate) const MAX_INFLIGHT: u32 = 64;
 
 /// The declared destination: the settings key naming the file.
-pub const DESTINATION: &str = "path";
+pub(crate) const DESTINATION: &str = "path";
 
 /// The catalogue code a dropped line is raised under: writing the opened file failed.
-pub const APPEND_FAILED: &str = "BUSBAR-7073";
+pub(crate) const APPEND_FAILED: &str = "BUSBAR-7073";
 /// The catalogue code a dropped line is raised under: the file could not be opened for the append.
-pub const OPEN_FAILED: &str = "BUSBAR-7074";
+pub(crate) const OPEN_FAILED: &str = "BUSBAR-7074";
 /// The catalogue code a rotation raises when dropping the oldest archive failed.
-pub const RETENTION_FAILED: &str = "BUSBAR-7075";
+pub(crate) const RETENTION_FAILED: &str = "BUSBAR-7075";
 /// The catalogue code a rotation raises when shifting an archive up one slot failed.
-pub const SHIFT_FAILED: &str = "BUSBAR-7076";
+pub(crate) const SHIFT_FAILED: &str = "BUSBAR-7076";
 /// The catalogue code a rotation raises when renaming the live file to its first archive failed.
-pub const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
+pub(crate) const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
 
 /// The most archives the host keeps for one destination: a larger `keep` is refused here rather
 /// than cut short by the host.
-pub const MAX_KEEP: u32 = 64;
+pub(crate) const MAX_KEEP: u32 = 64;
 
 /// The settings, parsed as the configuration grammar parses them (empty is `{}`).
 fn parse(settings: &[u8]) -> Result<FileSettings, Refusal> {
@@ -113,7 +113,7 @@ fn issued(parsed: FileSettings) -> (Arc<str>, u32) {
 
 /// One opened instance.
 #[derive(Debug)]
-pub struct FileSink {
+pub(crate) struct FileSink {
     /// The configured path (the only setting the sink itself reads) beside the effective `keep`
     /// (the operator's, else the declared [`ROTATE_ARCHIVE_LIMIT`]): ONE lock, written once per
     /// settings, so a reader never pairs one reload's path with another's keep. `open` and
@@ -122,6 +122,7 @@ pub struct FileSink {
 }
 
 impl Life for FileSink {
+    type Kind = busbar_contract::plugin::markers::ExportKind;
     const CANCEL: u32 = export::cancel::ABORTED;
 
     /// The settings' shape, in the configuration grammar's own serde words.
@@ -147,6 +148,7 @@ impl Life for FileSink {
 
 impl FileSink {
     /// The configured path.
+    #[cfg(test)]
     pub fn path(&self) -> Arc<str> {
         self.current().0
     }
@@ -158,6 +160,7 @@ impl FileSink {
     }
 
     /// The effective `keep`: how many archives the host keeps beside the path.
+    #[cfg(test)]
     pub fn keep(&self) -> u32 {
         self.current().1
     }
@@ -169,7 +172,7 @@ impl FileSink {
     /// [`Connector::disk_append`]: busbar_contract::abi::sdk::conn::Connector::disk_append
     pub fn append(
         &self,
-        host: Option<&Host>,
+        host: Option<&Host<busbar_contract::plugin::markers::ExportKind>>,
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         batch: &[u8],
     ) -> Poll<Option<Result<DiskWritten, DiskFailure>>> {
@@ -191,6 +194,7 @@ impl FileSink {
     /// Raise what the host reported for one append, in the order it happened: each failed step of
     /// the rotation that ran before it, the rotation itself, then — when the batch did not land —
     /// the line that says it was dropped.
+    #[cfg(test)]
     pub fn settle(&self, answer: &Result<DiskWritten, DiskFailure>) {
         let (path, keep) = self.current();
         self.settle_at(&path, keep, answer);
@@ -244,7 +248,9 @@ impl FileSink {
     }
 }
 
-pub use door::{door, Check, Deliver, MACRO_DOOR, NO_INSTANCE, STATEMENT, UNKNOWN_PHASE};
+pub use door::{door, MACRO_DOOR};
+#[cfg(test)]
+use door::{NO_INSTANCE, STATEMENT, UNKNOWN_PHASE};
 
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]

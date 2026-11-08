@@ -17,7 +17,6 @@ use busbar_contract::abi::host::service::{
 use busbar_contract::abi::mechanism::call::{
     Blob, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON, BLOB_JSONL, FLAG_RESUME,
 };
-use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{
     slot, CancelIn, CancelOut, OpenIn, OpenOut, RefreshIn,
 };
@@ -88,11 +87,7 @@ extern "C" fn append(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
 
 fn ops() -> &'static Ops {
     // SAFETY: this linked door and its export op table are static plugin program data.
-    unsafe {
-        &*Door::read_parts(busbar_export_file::door())
-            .ops
-            .cast::<Ops>()
-    }
+    unsafe { &*busbar_export_file::door().parts().ops.cast::<Ops>() }
 }
 
 fn blob(bytes: &[u8], fmt: u32) -> Blob {
