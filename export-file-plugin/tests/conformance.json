@@ -6,7 +6,7 @@
       { "settings": { "path": "/x", "rotate": 1 },
         "refusal": "settings: unknown field `rotate`, expected one of `path`, `rotate_mb`, `keep`" },
       { "settings": { "path": "/x", "rotate_mb": "one" },
-        "refusal": "settings: invalid type: string \"one\", expected u64" },
+        "refusal": "settings: invalid type: string \"***\", expected u64" },
       { "settings": { "path": "" }, "refusal": "settings: `path` must name a file" },
       { "settings": { "path": "a\u0000b" },
         "refusal": "settings: `path` must not contain a NUL character" },

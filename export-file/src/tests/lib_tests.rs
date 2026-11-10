@@ -117,7 +117,7 @@ fn a_zero_rotate_mb_is_accepted_and_says_so() {
 }
 
 #[test]
-fn a_wrong_typed_rotate_mb_is_refused_in_serde_words() {
+fn a_wrong_typed_rotate_mb_is_refused_without_echoing_values() {
     // Negative and overflowing numbers remain refusals with the SDK's exact diagnostic.
     for token in ["-1", "18446744073709551616"] {
         let settings = format!(r#"{{"path":"/x","rotate_mb":{token}}}"#);
@@ -125,7 +125,7 @@ fn a_wrong_typed_rotate_mb_is_refused_in_serde_words() {
     }
     assert_eq!(
         refused(r#"{"path":"/x","rotate_mb":"one"}"#),
-        "settings: invalid type: string \"one\", expected u64"
+        "settings: invalid type: string \"***\", expected u64"
     );
 }
 
