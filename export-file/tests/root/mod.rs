@@ -308,8 +308,8 @@ fn render_snapshot(
 ) -> Result<Vec<u8>, String> {
     use busbar_contract::export_calls::ExportCalls as _;
     use busbar_plugin_loader::dispatch::{
-        Bind, ConnTable, DispatchConfig, Dispatcher, NoSink, kinds::export::Export, load_dropped,
-        rendering_of_library,
+        kinds::export::Export, load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig,
+        Dispatcher, NoSink,
     };
     use std::sync::Arc;
     let families = common::plugins::snapshot_reader::parse_families(exposition)
