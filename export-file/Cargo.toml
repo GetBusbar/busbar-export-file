@@ -36,3 +36,7 @@ serde_json = { workspace = true }
 busbar-contract = { workspace = true, features = ["test-seal"] }
 [lints]
 workspace = true
+
+# Owner test sources consumed only by the assembly test harness.
+[package.metadata.busbar.test-sources]
+root = "tests/root/mod.rs"

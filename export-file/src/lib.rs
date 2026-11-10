@@ -272,8 +272,6 @@ mod tests;
 #[path = "tests/door_tests.rs"]
 mod door_tests;
 
-include!(concat!(env!("OUT_DIR"), "/root_test_source.rs"));
-
 #[cfg(test)]
 #[path = "loader_ownership_tests.rs"]
 mod loader_ownership_tests;
