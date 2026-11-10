@@ -320,6 +320,41 @@ fn the_retention_line_names_the_effective_keep() {
     assert_eq!(field(&events[0], "archive"), "/old.jsonl.5");
 }
 
+/// With `keep: 0` (truncate in place, no archives), the retention line names the path rather than a
+/// nonexistent archive, and a rotation says "truncation" rather than "rename".
+#[test]
+fn keep_zero_diagnostics_do_not_name_a_nonexistent_archive() {
+    let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 1, "keep": 0}));
+
+    // Retention with keep=0: must not name `<path>.0`.
+    let events = logged(|| s.settle(&Ok(report(0, DISK_RETENTION_FAILED, 0))));
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(field(&events[0], "diag"), RETENTION_FAILED);
+    assert_eq!(field(&events[0], "path"), "/var/log/x.jsonl");
+    assert!(
+        events[0].iter().all(|(n, _)| n != "archive"),
+        "keep=0 retention must not name an archive: {events:?}"
+    );
+    assert_eq!(
+        field(&events[0], "message"),
+        "request-log retention cleanup failed during in-place truncation"
+    );
+
+    // Rotation with keep=0: truncation, not rename.
+    let events = logged(|| s.settle(&Ok(report(DISK_ROTATED, 0, 3))));
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(field(&events[0], "level"), "INFO");
+    assert_eq!(field(&events[0], "path"), "/var/log/x.jsonl");
+    assert!(
+        events[0].iter().all(|(n, _)| n != "archive"),
+        "keep=0 rotation must not name an archive: {events:?}"
+    );
+    assert_eq!(
+        field(&events[0], "message"),
+        "request-log file rotated by truncation"
+    );
+}
+
 #[test]
 fn each_rotation_fault_bit_raises_exactly_its_own_code() {
     let s = sink(serde_json::json!({"path": "/var/log/x.jsonl", "rotate_mb": 1}));
@@ -491,9 +526,15 @@ fn a_reload_replaces_an_explicit_keep_and_can_restore_the_default() {
         s.refresh(settings.as_bytes(), &[], generation)
             .expect("an explicit keep applies");
         assert_eq!(s.keep(), keep);
+        let events = logged(|| s.settle(&Ok(report(0, DISK_RETENTION_FAILED, 0))));
         if keep != 0 {
-            let events = logged(|| s.settle(&Ok(report(0, DISK_RETENTION_FAILED, 0))));
             assert_eq!(field(&events[0], "archive"), format!("/a.jsonl.{keep}"));
+        } else {
+            assert_eq!(field(&events[0], "path"), "/a.jsonl");
+            assert!(
+                events[0].iter().all(|(n, _)| n != "archive"),
+                "keep=0 retention must not name an archive"
+            );
         }
     }
     s.refresh(br#"{"path":"/a.jsonl"}"#, &[], 5)

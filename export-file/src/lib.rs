@@ -209,11 +209,19 @@ impl FileSink {
             Err(f) => f.rotation,
         };
         if rotation.faults & DISK_RETENTION_FAILED != 0 {
-            tracing::warn!(
-                diag = %RETENTION_FAILED,
-                archive = %format!("{path}.{keep}"),
-                "request-log archive retention cleanup failed; the archive series may exceed its `keep` limit"
-            );
+            if keep > 0 {
+                tracing::warn!(
+                    diag = %RETENTION_FAILED,
+                    archive = %format!("{path}.{keep}"),
+                    "request-log archive retention cleanup failed; the archive series may exceed its `keep` limit"
+                );
+            } else {
+                tracing::warn!(
+                    diag = %RETENTION_FAILED,
+                    path = %path,
+                    "request-log retention cleanup failed during in-place truncation"
+                );
+            }
         }
         if rotation.faults & DISK_SHIFT_FAILED != 0 {
             tracing::warn!(
@@ -232,7 +240,11 @@ impl FileSink {
             );
         }
         if rotation.rotated == DISK_ROTATED {
-            tracing::info!(path = %path, archive = %format!("{path}.1"), "request-log file rotated by rename");
+            if keep > 0 {
+                tracing::info!(path = %path, archive = %format!("{path}.1"), "request-log file rotated by rename");
+            } else {
+                tracing::info!(path = %path, "request-log file rotated by truncation");
+            }
         }
         match answer {
             Ok(_) => {}
