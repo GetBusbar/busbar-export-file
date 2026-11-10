@@ -36,10 +36,5 @@ fn main() -> std::io::Result<()> {
         "tests/root/mod.rs",
         "__busbar_root_tests",
         "root_test_source.rs",
-    )?;
-    export_test_source(
-        "tests/common/mod.rs",
-        "__busbar_common_tests",
-        "common_test_source.rs",
     )
 }
