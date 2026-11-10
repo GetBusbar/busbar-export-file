@@ -346,3 +346,6 @@ fn render_snapshot(
     std::fs::remove_file(path).expect("remove the owner probe library");
     result
 }
+
+#[path = "loader_observations.rs"]
+mod loader_observations;
