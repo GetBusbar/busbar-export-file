@@ -265,7 +265,10 @@ fn run(dropped: bool) {
     };
     let declares = Declares::from_declares_json(busbar_export_file::DECLARES.as_bytes())
         .expect("the declaration parses");
-    plugin.grant_destinations(&declares);
+    let disk = busbar_contract::services::disk_admission::DiskAuthority::issue(
+        &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+    );
+    plugin.grant_destinations(&disk, &declares);
     let sink = ExportInstance::open(plugin, d, br#"{"path":"/a.jsonl","keep":3}"#)
         .expect("the sink opens");
 
