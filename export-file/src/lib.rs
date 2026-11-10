@@ -271,3 +271,5 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/door_tests.rs"]
 mod door_tests;
+
+include!(concat!(env!("OUT_DIR"), "/root_test_source.rs"));
