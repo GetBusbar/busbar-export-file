@@ -308,12 +308,12 @@ fn render_snapshot(
 ) -> Result<Vec<u8>, String> {
     use busbar_contract::export_calls::ExportCalls as _;
     use busbar_plugin_loader::dispatch::{
-        kinds::export::Export, load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig,
-        Dispatcher, NoSink,
+        Bind, ConnTable, DispatchConfig, Dispatcher, NoSink, kinds::export::Export, load_dropped,
+        rendering_of_library,
     };
     use std::sync::Arc;
-    let families =
-        common::plugins::parse_families(exposition).expect("the metrics owner's snapshot reads");
+    let families = common::plugins::snapshot_reader::parse_families(exposition)
+        .expect("the metrics owner's snapshot reads");
     let path = directory.join(format!("render-probe{}", std::env::consts::DLL_SUFFIX));
     std::fs::write(&path, lib).expect("stage the owner library");
     let stated = rendering_of_library(&path)
