@@ -100,6 +100,35 @@ fn deliver(p: &Plugin<Export>, d: &Dispatcher, batch: &[u8]) -> Called {
         recall: None,
     }
 }
+/// REFRESH as the host issues it (`ExportInstance::refresh`): submitted through the dispatcher, so
+/// it waits for a delivery's binding admission to retire instead of racing it. A direct
+/// `Plugin::call` is refused by the host whenever that admission is still let go on its worker.
+fn refresh(p: &Plugin<Export>, d: &Dispatcher, settings: &[u8]) -> Called {
+    let owned = Arc::new(settings.to_vec());
+    let mut input: RefreshIn = blank_in();
+    input.head = in_head();
+    input.settings = blob(&owned, BLOB_JSON);
+    input.generation = 2;
+    let ticket = d.mint(0).expect("ticket");
+    let done = d
+        .submit_lent(
+            p,
+            ticket,
+            slot::REFRESH,
+            Frame::new(input, out_head()),
+            DeadlineClass::Call,
+            0,
+            owned,
+        )
+        .wait_done();
+    d.recycle(ticket);
+    Called {
+        outcome: done.outcome,
+        error: done.error.clone(),
+        lease: done.lease,
+        recall: None,
+    }
+}
 fn run(dropped: bool) -> Vec<(String, String)> {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("conformance.json")).unwrap();
@@ -320,11 +349,7 @@ fn run(dropped: bool) -> Vec<(String, String)> {
         ("refresh bad", b"{}".as_slice()),
         ("refresh", settings.as_slice()),
     ] {
-        let mut input: RefreshIn = blank_in();
-        input.head = in_head();
-        input.settings = blob(bytes, BLOB_JSON);
-        input.generation = 2;
-        let c = p.call(slot::REFRESH, &mut Frame::new(input, out_head()));
+        let c = refresh(&p, &d, bytes);
         if label == "refresh" {
             assert_eq!(c.outcome, Outcome::Ready);
         } else {
